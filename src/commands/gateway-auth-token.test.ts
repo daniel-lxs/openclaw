@@ -59,6 +59,10 @@ it("prints only the resolved token for an interactive operator", async () => {
 
   await gatewayAuthTokenCommand(runtime);
 
+  expect(mocks.readConfigFileSnapshot).toHaveBeenCalledWith({
+    observe: false,
+    pluginValidation: "core-only",
+  });
   expect(mocks.resolveCommandSecretRefsViaGateway).toHaveBeenCalledWith({
     config: tokenConfig,
     commandName: "gateway auth-token",
@@ -75,6 +79,17 @@ it("diagnoses a redaction marker returned by an older Gateway instead of reveali
   setResolvedConfig({ gateway: { auth: { mode: "token", token: "__OPENCLAW_REDACTED__" } } });
   await expect(gatewayAuthTokenCommand(runtime)).rejects.toThrow("openclaw doctor --fix");
   expect(runtime.writeStdout).not.toHaveBeenCalled();
+});
+
+it("reports a config read failure instead of calling the config invalid", async () => {
+  mocks.readConfigFileSnapshot.mockResolvedValue({
+    valid: false,
+    path: "/tmp/openclaw.json",
+    readError: new Error("EACCES"),
+    issues: [{ path: "", message: "read failed: EACCES", errorCode: "CONFIG_READ_FAILED" }],
+  });
+
+  await expectRefusal("Config could not be read at /tmp/openclaw.json");
 });
 
 it("refuses non-interactive output before reading config or secrets", async () => {
