@@ -47,6 +47,7 @@ import {
   ProviderAuthConfigApplyError,
   ProviderCredentialsSavedError,
 } from "../../shared/provider-auth-result.js";
+import { prepareUserProfileCatalog } from "../../state/user-profile-list.js";
 import { isRecord } from "../../utils.js";
 import { normalizeSecretInput } from "../../utils/normalize-secret-input.js";
 import { createClackPrompter } from "../../wizard/clack-prompter.js";
@@ -763,18 +764,49 @@ export type ModelsAuthLoginFlowOptions = LoginOptions & {
 export async function runModelsAuthLoginFlowCore(
   opts: ModelsAuthLoginFlowOptions,
 ): Promise<ModelsAuthLoginFlowResult> {
-  return runModelsAuthLoginFlow(opts, true);
+  return runModelsAuthLoginFlow(opts, () => true);
 }
 
 export async function runModelsAuthLoginFlowForGateway(
   opts: ModelsAuthLoginFlowOptions,
 ): Promise<ModelsAuthLoginFlowResult> {
-  return runModelsAuthLoginFlow(opts, opts.isRemote === false);
+  return runModelsAuthLoginFlow(
+    opts,
+    (config) => opts.isRemote === false && isSharedGatewayForCliLogin(config),
+  );
+}
+
+/**
+ * The CLI scope note separates system/agent credentials from personal accounts, which
+ * matters once a Gateway holds, or is set up to identify, more than one person.
+ */
+async function isSharedGatewayForCliLogin(config: OpenClawConfig): Promise<boolean> {
+  const gateway = config.gateway;
+  if (
+    // Local state cannot describe the people on a remote Gateway.
+    gateway?.mode === "remote" ||
+    gateway?.auth?.mode === "trusted-proxy" ||
+    gateway?.roles ||
+    Object.keys(gateway?.auth?.identityScopes ?? {}).length > 0
+  ) {
+    return true;
+  }
+  try {
+    const catalog = await prepareUserProfileCatalog();
+    try {
+      return catalog.hasMultipleSessionSharingIdentities();
+    } finally {
+      catalog.release();
+    }
+  } catch {
+    // Unreadable state must not block sign-in or hide guidance that may apply.
+    return true;
+  }
 }
 
 async function runModelsAuthLoginFlow(
   opts: ModelsAuthLoginFlowOptions,
-  showScopeNote: boolean,
+  showScopeNote: (config: OpenClawConfig) => boolean | Promise<boolean>,
 ): Promise<ModelsAuthLoginFlowResult> {
   const requestedProviderId = opts.provider
     ? normalizeManualAuthProvider(opts.provider)
@@ -815,7 +847,7 @@ async function runModelsAuthLoginFlow(
   } else if (requestedProviderId && !requestedProvider) {
     requestedProvider = resolveRequestedLoginProviderOrThrow(authProviders, requestedProviderId);
   }
-  if (showScopeNote) {
+  if (await showScopeNote(context.config)) {
     await prompter.note(
       [
         "Scope: System / agent",
@@ -979,10 +1011,13 @@ export async function modelsAuthLoginCommand(opts: LoginOptions, runtime: Runtim
     );
   }
 
-  await runModelsAuthLoginFlowCore({
-    ...opts,
-    runtime,
-    prompter: createClackPrompter(),
-  });
+  await runModelsAuthLoginFlow(
+    {
+      ...opts,
+      runtime,
+      prompter: createClackPrompter(),
+    },
+    isSharedGatewayForCliLogin,
+  );
 }
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
