@@ -3,8 +3,10 @@ import {
   isNativeHookRelayBridgeStaleRegistrationError,
   renderNativeHookRelayUnavailableResponse,
 } from "../agents/harness/native-hook-relay-client.js";
+import { NATIVE_HOOK_EXACT_NUMBERS_FIELD } from "../agents/harness/native-hook-relay-constants.js";
 import { invokeRemoteNativeHookRelay } from "../agents/harness/native-hook-relay-remote-client.js";
 import type { NativeHookRelayProcessResponse } from "../agents/harness/native-hook-relay-types.js";
+import { isJsonObject } from "../agents/harness/native-hook-relay-utils.js";
 import type { CallGatewayOptions } from "../gateway/call.js";
 import { ADMIN_SCOPE } from "../gateway/operator-scopes.js";
 import { setSafeTimeout } from "../utils/timer-delay.js";
@@ -99,7 +101,12 @@ export async function runNativeHookRelayCli(opts: NativeHookRelayCliOptions): Pr
     let rawPayload: unknown;
     try {
       const rawInput = await readStreamText(stdin, MAX_NATIVE_HOOK_STDIN_BYTES, deadline);
-      rawPayload = rawInput.trim() ? JSON.parse(rawInput) : null;
+      if (!rawInput.trim()) {
+        rawPayload = null;
+      } else {
+        rawPayload =
+          event === "pre_tool_use" ? parsePreToolUseStdin(rawInput) : JSON.parse(rawInput);
+      }
     } catch (error) {
       if (isNativeHookRelayDeadlineError(error)) {
         return timedOut(error);
@@ -168,6 +175,27 @@ export async function runNativeHookRelayCli(opts: NativeHookRelayCliOptions): Pr
   } finally {
     deadline.dispose();
   }
+}
+
+/**
+ * Codex forwards the model's number text verbatim, and JSON.parse is the first
+ * lossy step. Only here can a rewrite still learn that re-serializing an argument
+ * object would alter a field the hook left alone.
+ */
+function parsePreToolUseStdin(rawInput: string): unknown {
+  let exactNumbers = true;
+  const payload: unknown = JSON.parse(
+    rawInput,
+    (_key, value: unknown, context?: { source?: string }) => {
+      if (typeof value === "number" && context?.source !== JSON.stringify(value)) {
+        exactNumbers = false;
+      }
+      return value;
+    },
+  );
+  return isJsonObject(payload)
+    ? { ...payload, [NATIVE_HOOK_EXACT_NUMBERS_FIELD]: exactNumbers }
+    : payload;
 }
 
 async function callGatewayLazy<T = Record<string, unknown>>(opts: CallGatewayOptions): Promise<T> {

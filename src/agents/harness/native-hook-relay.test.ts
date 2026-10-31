@@ -66,6 +66,32 @@ function invokeRelay(
   return invokeNativeHookRelay({ provider: "codex", relayId, event, rawPayload, ...options });
 }
 
+/** Sends Codex's exact hook stdin text through the real CLI into the real relay. */
+async function rewriteMcpLabelThroughCli(toolInputText: string) {
+  initializeGlobalHookRunner(
+    createMockPluginRegistry([
+      { hookName: "before_tool_call", handler: vi.fn(async () => ({ params: { label: "new" } })) },
+    ]),
+  );
+  const relay = registerAgentRelay();
+  const stdout = new PassThrough();
+  await runNativeHookRelayCliFromArgvForTest(
+    `node openclaw hooks relay --provider codex --relay-id ${relay.relayId} --event pre_tool_use`.split(
+      " ",
+    ),
+    {
+      stdin: Readable.from([
+        `{"hook_event_name":"PreToolUse","cwd":"/repo","tool_name":"mcp__notes__rec","tool_use_id":"native-mcp-numbers","tool_input":${toolInputText}}`,
+      ]),
+      stdout,
+      stderr: new PassThrough(),
+      invokeBridge: async ({ rawPayload }) =>
+        await invokeRelay(relay.relayId, "pre_tool_use", rawPayload),
+    },
+  );
+  return JSON.parse(String(stdout.read())).hookSpecificOutput;
+}
+
 function registerAgentRelay(
   overrides: Partial<Parameters<typeof registerNativeHookRelay>[0]> = {},
 ) {
@@ -1781,6 +1807,7 @@ describe("native hook relay registry", () => {
         tool_name: toolName,
         tool_use_id: "native-valid-rewrite",
         tool_input: toolInput,
+        openclaw_exact_numbers: true,
       });
       expect(JSON.parse(response.stdout)).toEqual({
         hookSpecificOutput: {
@@ -1791,6 +1818,28 @@ describe("native hook relay registry", () => {
       });
     },
   );
+
+  it.each([
+    { name: "a rounded integer", toolInput: '{"recordId":9007199254740993,"label":"old"}' },
+    { name: "a long decimal", toolInput: '{"ratio":0.12345678901234567890123,"label":"old"}' },
+    { name: "a float-typed whole number", toolInput: '{"ratio":1.0,"label":"old"}' },
+    { name: "negative zero", toolInput: '{"offset":-0.0,"label":"old"}' },
+  ])("denies an MCP rewrite through the CLI when $name would change", async ({ toolInput }) => {
+    expect(await rewriteMcpLabelThroughCli(toolInput)).toEqual({
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: expect.stringContaining("every number"),
+    });
+  });
+
+  it("keeps exact MCP numbers in a rewrite through the CLI", async () => {
+    const toolInput = '{"recordId":9007199254740991,"ratio":0.5,"nested":[-3],"label":"old"}';
+    expect(await rewriteMcpLabelThroughCli(toolInput)).toEqual({
+      hookEventName: "PreToolUse",
+      permissionDecision: "allow",
+      updatedInput: JSON.parse(toolInput.replace('"old"', '"new"')),
+    });
+  });
 
   it("returns a rewrite only after the policy owner approves it", async () => {
     const approved = createDeferredCore<{ blocked: false; params: { command: string } }>();
@@ -1888,7 +1937,16 @@ describe("native hook relay registry", () => {
       toolInput: { query: "original" },
       rewrite: { query: Number.POSITIVE_INFINITY },
     },
-  ])("rejects $name without emitting a replacement", async ({ toolName, toolInput, rewrite }) => {
+    {
+      name: "MCP input that did not arrive through the verifying CLI",
+      toolName: "mcp__notes__search",
+      toolInput: { query: "original" },
+      rewrite: { query: "rewritten" },
+      exactNumbers: false,
+    },
+  ])("rejects $name without emitting a replacement", async (rejection) => {
+    const { toolName, toolInput, rewrite } = rejection;
+    const exactNumbers = "exactNumbers" in rejection ? rejection.exactNumbers : true;
     initializeGlobalHookRunner(
       createMockPluginRegistry([
         { hookName: "before_tool_call", handler: vi.fn(async () => ({ params: rewrite })) },
@@ -1901,13 +1959,14 @@ describe("native hook relay registry", () => {
       tool_name: toolName,
       tool_use_id: "native-invalid-rewrite",
       tool_input: toolInput,
+      ...(exactNumbers ? { openclaw_exact_numbers: true } : {}),
     });
     expect(JSON.parse(response.stdout)).toEqual({
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
         permissionDecisionReason:
-          "OpenClaw tool policy rewrote Codex native tool input that Codex cannot apply; refusing original request. Only `command` can change for Bash and apply_patch, and MCP tools need JSON object arguments.",
+          "OpenClaw tool policy rewrote Codex native tool input that Codex cannot apply; refusing original request. Only `command` can change for Bash and apply_patch. MCP arguments must be a JSON object within plugin hook limits, and every number must survive JavaScript parsing unchanged.",
       },
     });
   });

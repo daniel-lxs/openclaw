@@ -77,8 +77,9 @@ Guard behavior for typed lifecycle hooks:
   It freezes the selected parameter snapshot: later handlers can block but
   cannot change the approved parameters.
 - Native tool relays can have narrower contracts. Codex native tools apply
-  rewrites only to the shell or `apply_patch` `command` and to MCP arguments,
-  and block on any other rewrite; see
+  rewrites only to the shell or `apply_patch` `command` and to MCP arguments
+  within size, depth, and number-precision limits, and block on any other
+  rewrite; see
   [Codex hook boundaries](/plugins/codex-harness-runtime#hook-boundaries).
 - `requireApproval` pauses the agent run and asks the user through plugin
   approvals. `/approve` can approve both exec and plugin approvals. In Codex

@@ -144,8 +144,9 @@ callbacks.
 
 A `before_tool_call` rewrite on a Codex `PreToolUse` event returns the
 replacement as `updatedInput` when Codex can apply it: `command` for native
-shell and `apply_patch`, or the JSON object arguments for MCP tools. Codex then
-applies its normal approval and sandbox policy to the replacement. OpenClaw
+shell and `apply_patch`, or the JSON object arguments for MCP tools within the
+[size, depth, and number limits](/plugins/codex-harness-runtime/v1-support-contract).
+Codex then applies its normal approval and sandbox policy to the replacement. OpenClaw
 denies the call for any other rewrite, including extra shell fields such as
 `workdir`, other native tools, and rewrites that arrive during a report-mode
 approval, when Codex has already fixed the command.

@@ -1,6 +1,7 @@
 import { stableStringify } from "@openclaw/normalization-core";
 import { isPluginJsonValue } from "../../plugins/host-hook-json.js";
 import { normalizeToolPolicyName } from "../tool-policy.js";
+import { NATIVE_HOOK_EXACT_NUMBERS_FIELD } from "./native-hook-relay-constants.js";
 import type {
   JsonValue,
   NativeHookRelayInvocation,
@@ -128,7 +129,9 @@ export function nativeHookRelayParamsWereRewritten(
  * Inverts a policy rewrite into the `updatedInput` the pinned Codex handler reads.
  * Returns undefined when Codex would drop or misread it, so callers fail closed:
  * Bash and apply_patch keep only `command` (other hook-visible fields must match),
- * MCP replaces its argument object, and other tools have no reviewed inverse.
+ * MCP replaces its whole argument object, so untouched fields are re-serialized
+ * and need numbers the CLI verified as exact, and other tools have no reviewed
+ * inverse.
  */
 export function resolveCodexUpdatedToolInput(params: {
   rawPayload: JsonValue;
@@ -141,7 +144,7 @@ export function resolveCodexUpdatedToolInput(params: {
     return undefined;
   }
   if (toolName.startsWith("mcp__")) {
-    return isPluginJsonValue(params.candidate)
+    return payload[NATIVE_HOOK_EXACT_NUMBERS_FIELD] === true && isPluginJsonValue(params.candidate)
       ? (params.candidate as Record<string, JsonValue>)
       : undefined;
   }
