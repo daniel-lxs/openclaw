@@ -89,7 +89,8 @@ async function rewriteMcpThroughCli(
       stdout,
       stderr: new PassThrough(),
       invokeBridge: async ({ rawPayload }) =>
-        await invokeRelay(relay.relayId, "pre_tool_use", rawPayload),
+        // oxlint-disable-next-line unicorn/prefer-structured-clone -- the real bridge carries JSON, which turns Infinity into null; a clone would keep it.
+        await invokeRelay(relay.relayId, "pre_tool_use", JSON.parse(JSON.stringify(rawPayload))),
     },
   );
   return JSON.parse(String(stdout.read())).hookSpecificOutput;
@@ -1829,11 +1830,37 @@ describe("native hook relay registry", () => {
     { name: "negative zero", toolInput: '{"offset":-0.0,"label":"old"}' },
     { name: "an exponent form", toolInput: '{"count":1e3,"label":"old"}' },
     { name: "a nested number", toolInput: '{"items":[{"ratio":1.0}],"label":"old"}' },
-  ])("denies an MCP rewrite through the CLI when $name would change", async ({ toolInput }) => {
-    expect(await rewriteMcpThroughCli(toolInput)).toEqual({
+    {
+      name: "a rounded integer moved by an array prepend",
+      toolInput: '{"items":[9007199254740993],"label":"old"}',
+      rewrite: { items: [0, 9007199254740992], label: "new" },
+    },
+    {
+      name: "a rounded integer moved to another key",
+      toolInput: '{"recordId":9007199254740993,"label":"old"}',
+      rewrite: { recordId: 1, previousId: 9007199254740992 },
+    },
+    {
+      name: "a rounded integer moved into a new object",
+      toolInput: '{"recordId":9007199254740993,"label":"old"}',
+      rewrite: { recordId: 1, history: [{ id: 9007199254740992 }] },
+    },
+    {
+      name: "an overflowing number moved by an array prepend",
+      toolInput: '{"items":[1e400],"label":"old"}',
+      rewrite: { items: [0, null] },
+    },
+    {
+      name: "an unrelated number equals a replaced one",
+      toolInput: '{"ratio":1.0,"limit":1,"label":"old"}',
+      rewrite: { ratio: 2 },
+    },
+  ])("denies an MCP rewrite through the CLI when $name would change", async (row) => {
+    const { toolInput, rewrite } = row as { toolInput: string; rewrite?: object };
+    expect(await rewriteMcpThroughCli(toolInput, { rewrite })).toEqual({
       hookEventName: "PreToolUse",
       permissionDecision: "deny",
-      permissionDecisionReason: expect.stringContaining("any number the rewrite keeps"),
+      permissionDecisionReason: expect.stringContaining("JavaScript parsing altered"),
     });
   });
 
@@ -2019,7 +2046,7 @@ describe("native hook relay registry", () => {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
         permissionDecisionReason:
-          "OpenClaw tool policy rewrote Codex native tool input that Codex cannot apply; refusing original request. Only `command` can change for Bash and apply_patch. MCP arguments must be a JSON object within plugin hook limits, and any number the rewrite keeps must survive JavaScript parsing unchanged.",
+          "OpenClaw tool policy rewrote Codex native tool input that Codex cannot apply; refusing original request. Only `command` can change for Bash and apply_patch. MCP arguments must be a JSON object within plugin hook limits, and the rewrite must not contain a number that JavaScript parsing altered.",
       },
     });
   });

@@ -222,7 +222,7 @@ async function runNativeHookRelayPreToolUse(
     });
     if (!updatedInput) {
       return codexNativeHookRelayResponseCodec.renderPreToolUseBlockResponse(
-        "OpenClaw tool policy rewrote Codex native tool input that Codex cannot apply; refusing original request. Only `command` can change for Bash and apply_patch. MCP arguments must be a JSON object within plugin hook limits, and any number the rewrite keeps must survive JavaScript parsing unchanged.",
+        "OpenClaw tool policy rewrote Codex native tool input that Codex cannot apply; refusing original request. Only `command` can change for Bash and apply_patch. MCP arguments must be a JSON object within plugin hook limits, and the rewrite must not contain a number that JavaScript parsing altered.",
       );
     }
   }

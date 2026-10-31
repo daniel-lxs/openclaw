@@ -129,8 +129,8 @@ export function nativeHookRelayParamsWereRewritten(
  * Inverts a policy rewrite into the `updatedInput` the pinned Codex handler reads.
  * Returns undefined when Codex would drop or misread it, so callers fail closed:
  * Bash and apply_patch keep only `command` (other hook-visible fields must match),
- * MCP replaces its whole argument object, so a number the rewrite keeps must be
- * one the CLI verified as exact, and other tools have no reviewed inverse.
+ * MCP replaces its whole argument object, so the rewrite must not carry a number
+ * the CLI found altered by parsing, and other tools have no reviewed inverse.
  */
 export function resolveCodexUpdatedToolInput(params: {
   rawPayload: JsonValue;
@@ -168,9 +168,9 @@ export function resolveCodexUpdatedToolInput(params: {
 }
 
 /**
- * A kept number equal to its parsed original counts as untouched even if a hook
- * set that same value. An inexact number a hook moves to another position is the
- * hook's own value; re-indexing an array can do that without being detected.
+ * Matches by value, not path: a hook only ever holds the altered number, so a kept
+ * copy equals it wherever an array or object edit moved it. An unrelated number
+ * with the same value also denies; a copy the hook reformats is not detectable.
  */
 function keepsOnlyExactNumbers(params: {
   inexactNumberPaths: unknown;
@@ -185,10 +185,17 @@ function keepsOnlyExactNumbers(params: {
     return true;
   }
   const original: unknown = JSON.parse(params.originalToolInputFingerprint);
-  return !paths.some((path) => {
-    const kept = readJsonPath(params.candidate, path);
-    return kept !== undefined && kept === readJsonPath(original, path);
-  });
+  const inexactValues = new Set(paths.map((path) => readJsonPath(original, path)));
+  return !containsAnyValue(params.candidate, inexactValues);
+}
+
+function containsAnyValue(value: unknown, targets: ReadonlySet<unknown>): boolean {
+  return (
+    targets.has(value) ||
+    (typeof value === "object" &&
+      value !== null &&
+      Object.values(value).some((child) => containsAnyValue(child, targets)))
+  );
 }
 
 function readJsonPath(root: unknown, path: readonly string[]): unknown {
