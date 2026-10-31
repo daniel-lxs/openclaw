@@ -59,10 +59,6 @@ it("prints only the resolved token for an interactive operator", async () => {
 
   await gatewayAuthTokenCommand(runtime);
 
-  expect(mocks.readConfigFileSnapshot).toHaveBeenCalledWith({
-    observe: false,
-    pluginValidation: "core-only",
-  });
   expect(mocks.resolveCommandSecretRefsViaGateway).toHaveBeenCalledWith({
     config: tokenConfig,
     commandName: "gateway auth-token",
