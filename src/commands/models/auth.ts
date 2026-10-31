@@ -47,7 +47,6 @@ import {
   ProviderAuthConfigApplyError,
   ProviderCredentialsSavedError,
 } from "../../shared/provider-auth-result.js";
-import { prepareUserProfileCatalog } from "../../state/user-profile-list.js";
 import { isRecord } from "../../utils.js";
 import { normalizeSecretInput } from "../../utils/normalize-secret-input.js";
 import { createClackPrompter } from "../../wizard/clack-prompter.js";
@@ -86,6 +85,7 @@ import {
   resolveReloginProfileIdentity,
   snapshotReloginAuthProfiles,
 } from "./auth-relogin-identity.js";
+import { isSharedGatewayForCliLogin, showModelsAuthScopeNote } from "./auth-scope-note.js";
 import {
   loadValidConfigSnapshotOrThrow,
   resolveModelsTargetAgent,
@@ -776,34 +776,6 @@ export async function runModelsAuthLoginFlowForGateway(
   );
 }
 
-/**
- * The CLI scope note separates system/agent credentials from personal accounts, which
- * matters once a Gateway holds, or is set up to identify, more than one person.
- */
-async function isSharedGatewayForCliLogin(config: OpenClawConfig): Promise<boolean> {
-  const gateway = config.gateway;
-  if (
-    // Local state cannot describe the people on a remote Gateway.
-    gateway?.mode === "remote" ||
-    gateway?.auth?.mode === "trusted-proxy" ||
-    gateway?.roles ||
-    Object.keys(gateway?.auth?.identityScopes ?? {}).length > 0
-  ) {
-    return true;
-  }
-  try {
-    const catalog = await prepareUserProfileCatalog();
-    try {
-      return catalog.hasMultipleSessionSharingIdentities();
-    } finally {
-      catalog.release();
-    }
-  } catch {
-    // Unreadable state must not block sign-in or hide guidance that may apply.
-    return true;
-  }
-}
-
 async function runModelsAuthLoginFlow(
   opts: ModelsAuthLoginFlowOptions,
   showScopeNote: (config: OpenClawConfig) => boolean | Promise<boolean>,
@@ -848,15 +820,7 @@ async function runModelsAuthLoginFlow(
     requestedProvider = resolveRequestedLoginProviderOrThrow(authProviders, requestedProviderId);
   }
   if (await showScopeNote(context.config)) {
-    await prompter.note(
-      [
-        "Scope: System / agent",
-        `Agent: ${context.agentId}`,
-        "Location: the machine running OpenClaw",
-        `For personal model accounts on a Gateway, run ${formatCliCommand("openclaw models accounts login --help")}.`,
-      ].join("\n"),
-      "Provider sign-in",
-    );
+    await showModelsAuthScopeNote(prompter, context.agentId);
   }
   const selectedProvider =
     requestedProvider ??
