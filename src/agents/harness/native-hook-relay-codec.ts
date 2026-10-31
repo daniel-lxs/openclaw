@@ -1,7 +1,7 @@
 import { stableStringify } from "@openclaw/normalization-core";
 import { isPluginJsonValue } from "../../plugins/host-hook-json.js";
 import { normalizeToolPolicyName } from "../tool-policy.js";
-import { NATIVE_HOOK_EXACT_NUMBERS_FIELD } from "./native-hook-relay-constants.js";
+import { NATIVE_HOOK_INEXACT_NUMBER_PATHS_FIELD } from "./native-hook-relay-constants.js";
 import type {
   JsonValue,
   NativeHookRelayInvocation,
@@ -129,9 +129,8 @@ export function nativeHookRelayParamsWereRewritten(
  * Inverts a policy rewrite into the `updatedInput` the pinned Codex handler reads.
  * Returns undefined when Codex would drop or misread it, so callers fail closed:
  * Bash and apply_patch keep only `command` (other hook-visible fields must match),
- * MCP replaces its whole argument object, so untouched fields are re-serialized
- * and need numbers the CLI verified as exact, and other tools have no reviewed
- * inverse.
+ * MCP replaces its whole argument object, so a number the rewrite keeps must be
+ * one the CLI verified as exact, and other tools have no reviewed inverse.
  */
 export function resolveCodexUpdatedToolInput(params: {
   rawPayload: JsonValue;
@@ -144,7 +143,12 @@ export function resolveCodexUpdatedToolInput(params: {
     return undefined;
   }
   if (toolName.startsWith("mcp__")) {
-    return payload[NATIVE_HOOK_EXACT_NUMBERS_FIELD] === true && isPluginJsonValue(params.candidate)
+    return isPluginJsonValue(params.candidate) &&
+      keepsOnlyExactNumbers({
+        inexactNumberPaths: payload[NATIVE_HOOK_INEXACT_NUMBER_PATHS_FIELD],
+        originalToolInputFingerprint: params.originalToolInputFingerprint,
+        candidate: params.candidate,
+      })
       ? (params.candidate as Record<string, JsonValue>)
       : undefined;
   }
@@ -161,6 +165,41 @@ export function resolveCodexUpdatedToolInput(params: {
       params.originalToolInputFingerprint
     ? { command }
     : undefined;
+}
+
+/**
+ * A kept number equal to its parsed original counts as untouched even if a hook
+ * set that same value. An inexact number a hook moves to another position is the
+ * hook's own value; re-indexing an array can do that without being detected.
+ */
+function keepsOnlyExactNumbers(params: {
+  inexactNumberPaths: unknown;
+  originalToolInputFingerprint: string;
+  candidate: unknown;
+}): boolean {
+  if (typeof params.inexactNumberPaths !== "string") {
+    return false;
+  }
+  const paths = JSON.parse(params.inexactNumberPaths) as string[][];
+  if (paths.length === 0) {
+    return true;
+  }
+  const original: unknown = JSON.parse(params.originalToolInputFingerprint);
+  return !paths.some((path) => {
+    const kept = readJsonPath(params.candidate, path);
+    return kept !== undefined && kept === readJsonPath(original, path);
+  });
+}
+
+function readJsonPath(root: unknown, path: readonly string[]): unknown {
+  let current = root;
+  for (const key of path) {
+    if (current === null || typeof current !== "object" || !Object.hasOwn(current, key)) {
+      return undefined;
+    }
+    current = Reflect.get(current, key);
+  }
+  return current;
 }
 
 export function readCodexToolResponse(rawPayload: JsonValue): unknown {

@@ -67,10 +67,13 @@ function invokeRelay(
 }
 
 /** Sends Codex's exact hook stdin text through the real CLI into the real relay. */
-async function rewriteMcpLabelThroughCli(toolInputText: string) {
+async function rewriteMcpThroughCli(
+  toolInputText: string,
+  { rewrite = { label: "new" }, outerFields = "" }: { rewrite?: object; outerFields?: string } = {},
+) {
   initializeGlobalHookRunner(
     createMockPluginRegistry([
-      { hookName: "before_tool_call", handler: vi.fn(async () => ({ params: { label: "new" } })) },
+      { hookName: "before_tool_call", handler: vi.fn(async () => ({ params: rewrite })) },
     ]),
   );
   const relay = registerAgentRelay();
@@ -81,7 +84,7 @@ async function rewriteMcpLabelThroughCli(toolInputText: string) {
     ),
     {
       stdin: Readable.from([
-        `{"hook_event_name":"PreToolUse","cwd":"/repo","tool_name":"mcp__notes__rec","tool_use_id":"native-mcp-numbers","tool_input":${toolInputText}}`,
+        `{"hook_event_name":"PreToolUse",${outerFields}"cwd":"/repo","tool_name":"mcp__notes__rec","tool_use_id":"native-mcp-numbers","tool_input":${toolInputText}}`,
       ]),
       stdout,
       stderr: new PassThrough(),
@@ -1807,7 +1810,7 @@ describe("native hook relay registry", () => {
         tool_name: toolName,
         tool_use_id: "native-valid-rewrite",
         tool_input: toolInput,
-        openclaw_exact_numbers: true,
+        openclaw_inexact_number_paths: "[]",
       });
       expect(JSON.parse(response.stdout)).toEqual({
         hookSpecificOutput: {
@@ -1824,21 +1827,71 @@ describe("native hook relay registry", () => {
     { name: "a long decimal", toolInput: '{"ratio":0.12345678901234567890123,"label":"old"}' },
     { name: "a float-typed whole number", toolInput: '{"ratio":1.0,"label":"old"}' },
     { name: "negative zero", toolInput: '{"offset":-0.0,"label":"old"}' },
+    { name: "an exponent form", toolInput: '{"count":1e3,"label":"old"}' },
+    { name: "a nested number", toolInput: '{"items":[{"ratio":1.0}],"label":"old"}' },
   ])("denies an MCP rewrite through the CLI when $name would change", async ({ toolInput }) => {
-    expect(await rewriteMcpLabelThroughCli(toolInput)).toEqual({
+    expect(await rewriteMcpThroughCli(toolInput)).toEqual({
       hookEventName: "PreToolUse",
       permissionDecision: "deny",
-      permissionDecisionReason: expect.stringContaining("every number"),
+      permissionDecisionReason: expect.stringContaining("any number the rewrite keeps"),
     });
   });
 
   it("keeps exact MCP numbers in a rewrite through the CLI", async () => {
     const toolInput = '{"recordId":9007199254740991,"ratio":0.5,"nested":[-3],"label":"old"}';
-    expect(await rewriteMcpLabelThroughCli(toolInput)).toEqual({
+    expect(await rewriteMcpThroughCli(toolInput)).toEqual({
       hookEventName: "PreToolUse",
       permissionDecision: "allow",
       updatedInput: JSON.parse(toolInput.replace('"old"', '"new"')),
     });
+  });
+
+  it.each([
+    {
+      name: "replaces the inexact field",
+      toolInput: '{"ratio":1.0,"label":"old"}',
+      rewrite: { ratio: 2 },
+      updatedInput: { ratio: 2, label: "old" },
+    },
+    {
+      name: "replaces the parent of an inexact field",
+      toolInput: '{"meta":{"recordId":9007199254740993,"note":"old"},"label":"old"}',
+      rewrite: { meta: { note: "new" } },
+      updatedInput: { meta: { note: "new" }, label: "old" },
+    },
+    {
+      name: "replaces an array element holding an inexact number",
+      toolInput: '{"items":[1.0,2],"label":"old"}',
+      rewrite: { items: [3, 2] },
+      updatedInput: { items: [3, 2], label: "old" },
+    },
+  ])("allows an MCP rewrite that $name", async ({ toolInput, rewrite, updatedInput }) => {
+    expect(await rewriteMcpThroughCli(toolInput, { rewrite })).toEqual({
+      hookEventName: "PreToolUse",
+      permissionDecision: "allow",
+      updatedInput,
+    });
+  });
+
+  it("ignores inexact numbers outside the MCP tool arguments", async () => {
+    expect(
+      await rewriteMcpThroughCli('{"label":"old"}', { outerFields: '"retry_after":1.0,' }),
+    ).toEqual({
+      hookEventName: "PreToolUse",
+      permissionDecision: "allow",
+      updatedInput: { label: "new" },
+    });
+  });
+
+  it("denies an MCP rewrite when inexact numbers exceed the tracked bound", async () => {
+    const values = Array.from({ length: 10_000 }, () => "1.0").join(",");
+    const { permissionDecision } = await rewriteMcpThroughCli(
+      `{"items":[${values}],"label":"old"}`,
+      {
+        rewrite: { items: [] },
+      },
+    );
+    expect(permissionDecision).toBe("deny");
   });
 
   it("returns a rewrite only after the policy owner approves it", async () => {
@@ -1959,14 +2012,14 @@ describe("native hook relay registry", () => {
       tool_name: toolName,
       tool_use_id: "native-invalid-rewrite",
       tool_input: toolInput,
-      ...(exactNumbers ? { openclaw_exact_numbers: true } : {}),
+      ...(exactNumbers ? { openclaw_inexact_number_paths: "[]" } : {}),
     });
     expect(JSON.parse(response.stdout)).toEqual({
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
         permissionDecisionReason:
-          "OpenClaw tool policy rewrote Codex native tool input that Codex cannot apply; refusing original request. Only `command` can change for Bash and apply_patch. MCP arguments must be a JSON object within plugin hook limits, and every number must survive JavaScript parsing unchanged.",
+          "OpenClaw tool policy rewrote Codex native tool input that Codex cannot apply; refusing original request. Only `command` can change for Bash and apply_patch. MCP arguments must be a JSON object within plugin hook limits, and any number the rewrite keeps must survive JavaScript parsing unchanged.",
       },
     });
   });
