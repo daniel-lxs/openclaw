@@ -1706,7 +1706,7 @@ describe("native hook relay registry", () => {
     },
   );
 
-  it.each(["report rewrite", "in-place mutation"] as const)(
+  it.each(["report rewrite", "report in-place mutation"] as const)(
     "blocks Codex native pre-tool execution after a policy %s",
     async (mode) => {
       const beforeToolCall = vi.fn(async (event: unknown) => {
@@ -1726,7 +1726,7 @@ describe("native hook relay registry", () => {
       const relay = registerAgentRelay();
       const response = await invokeRelay(relay.relayId, "pre_tool_use", {
         hook_event_name: "PreToolUse",
-        ...(mode === "report rewrite" ? { openclaw_approval_mode: "report" } : {}),
+        openclaw_approval_mode: "report",
         cwd: "/repo",
         tool_name: "exec_command",
         tool_use_id: "native-policy-rewrite",
@@ -1743,6 +1743,174 @@ describe("native hook relay registry", () => {
       expect(beforeToolCall).toHaveBeenCalledTimes(1);
     },
   );
+
+  it.each([
+    {
+      name: "Bash command",
+      toolName: "Bash",
+      toolInput: { command: "cat /tmp/private_key" },
+      rewrite: { command: "echo rewritten" },
+      updatedInput: { command: "echo rewritten" },
+    },
+    {
+      name: "apply_patch command",
+      toolName: "apply_patch",
+      toolInput: { command: "*** Begin Patch\n*** End Patch\n" },
+      rewrite: { command: "*** Begin Patch\n*** Add File: a\n+a\n*** End Patch\n" },
+      updatedInput: { command: "*** Begin Patch\n*** Add File: a\n+a\n*** End Patch\n" },
+    },
+    {
+      name: "MCP arguments",
+      toolName: "mcp__notes__search",
+      toolInput: { query: "original", limit: 5 },
+      rewrite: { query: "rewritten" },
+      updatedInput: { query: "rewritten", limit: 5 },
+    },
+  ])(
+    "applies a validated $name rewrite",
+    async ({ toolName, toolInput, rewrite, updatedInput }) => {
+      initializeGlobalHookRunner(
+        createMockPluginRegistry([
+          { hookName: "before_tool_call", handler: vi.fn(async () => ({ params: rewrite })) },
+        ]),
+      );
+      const relay = registerAgentRelay();
+      const response = await invokeRelay(relay.relayId, "pre_tool_use", {
+        hook_event_name: "PreToolUse",
+        cwd: "/repo",
+        tool_name: toolName,
+        tool_use_id: "native-valid-rewrite",
+        tool_input: toolInput,
+      });
+      expect(JSON.parse(response.stdout)).toEqual({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "allow",
+          updatedInput,
+        },
+      });
+    },
+  );
+
+  it("returns a rewrite only after the policy owner approves it", async () => {
+    const approved = createDeferredCore<{ blocked: false; params: { command: string } }>();
+    const relay = registerAgentRelay({ runBeforeToolCall: () => approved.promise });
+    let settled = false;
+    const response = invokeRelay(relay.relayId, "pre_tool_use", {
+      hook_event_name: "PreToolUse",
+      cwd: "/repo",
+      tool_name: "Bash",
+      tool_use_id: "native-approved-rewrite",
+      tool_input: { command: "cat /tmp/private_key" },
+    }).finally(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    approved.resolve({ blocked: false, params: { command: "echo rewritten" } });
+    expect(JSON.parse((await response).stdout).hookSpecificOutput).toEqual({
+      hookEventName: "PreToolUse",
+      permissionDecision: "allow",
+      updatedInput: { command: "echo rewritten" },
+    });
+  });
+
+  it("denies a deferred approval that rewrites the fixed app-server command", async () => {
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([
+        {
+          hookName: "before_tool_call",
+          handler: vi.fn(async () => ({
+            requireApproval: { title: "Needs approval", description: "native command" },
+          })),
+        },
+      ]),
+    );
+    const relay = registerAgentRelay();
+    const toolUseId = "native-deferred-rewrite";
+    await invokeRelay(relay.relayId, "pre_tool_use", {
+      hook_event_name: "PreToolUse",
+      openclaw_approval_mode: "report",
+      cwd: "/repo",
+      tool_name: "exec_command",
+      tool_use_id: toolUseId,
+      tool_input: { cmd: "pwd" },
+    });
+    testing.setNativeHookRelayDeferredToolApprovalRequesterForTests(async () => ({
+      blocked: false,
+      params: { cmd: "pwd", command: "echo rewritten" },
+    }));
+    await expect(
+      resolveNativeHookRelayDeferredToolApproval({ relayId: relay.relayId, toolUseId }),
+    ).resolves.toMatchObject({ handled: true, outcome: "denied" });
+  });
+
+  it.each([
+    {
+      name: "a Bash field Codex would drop",
+      toolName: "Bash",
+      toolInput: { command: "pwd" },
+      rewrite: { workdir: "/" },
+    },
+    {
+      name: "a Bash command plus a dropped field",
+      toolName: "Bash",
+      toolInput: { command: "pwd" },
+      rewrite: { command: "ls", timeout: 5 },
+    },
+    {
+      name: "a blank Bash command",
+      toolName: "Bash",
+      toolInput: { command: "pwd" },
+      rewrite: { command: "  " },
+    },
+    {
+      name: "a non-string apply_patch command",
+      toolName: "apply_patch",
+      toolInput: { command: "*** Begin Patch\n*** End Patch\n" },
+      rewrite: { command: ["patch"] },
+    },
+    {
+      name: "a tool with no reviewed inverse",
+      toolName: "spawn_agent",
+      toolInput: { message: "original" },
+      rewrite: { message: "rewritten" },
+    },
+    {
+      name: "an MCP call whose original input is not an object",
+      toolName: "mcp__notes__search",
+      toolInput: "not json",
+      rewrite: { value: "rewritten" },
+    },
+    {
+      name: "MCP arguments that are not JSON",
+      toolName: "mcp__notes__search",
+      toolInput: { query: "original" },
+      rewrite: { query: Number.POSITIVE_INFINITY },
+    },
+  ])("rejects $name without emitting a replacement", async ({ toolName, toolInput, rewrite }) => {
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([
+        { hookName: "before_tool_call", handler: vi.fn(async () => ({ params: rewrite })) },
+      ]),
+    );
+    const relay = registerAgentRelay();
+    const response = await invokeRelay(relay.relayId, "pre_tool_use", {
+      hook_event_name: "PreToolUse",
+      cwd: "/repo",
+      tool_name: toolName,
+      tool_use_id: "native-invalid-rewrite",
+      tool_input: toolInput,
+    });
+    expect(JSON.parse(response.stdout)).toEqual({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason:
+          "OpenClaw tool policy rewrote Codex native tool input that Codex cannot apply; refusing original request. Only `command` can change for Bash and apply_patch, and MCP tools need JSON object arguments.",
+      },
+    });
+  });
 
   it.each(["allow once", "cancelled"] as const)(
     "settles deferred native approval as %s",

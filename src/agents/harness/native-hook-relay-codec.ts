@@ -1,4 +1,5 @@
 import { stableStringify } from "@openclaw/normalization-core";
+import { isPluginJsonValue } from "../../plugins/host-hook-json.js";
 import { normalizeToolPolicyName } from "../tool-policy.js";
 import type {
   JsonValue,
@@ -19,6 +20,9 @@ const CODEX_NATIVE_HOOK_TOOL_NAME_ALIASES: Record<string, string> = {
   edit: "apply_patch",
   agent: "spawn_agent",
 };
+
+// Exact hook-facing names, not policy aliases: Codex reads only `command` here.
+const CODEX_COMMAND_INPUT_HOOK_TOOLS = new Set(["Bash", "apply_patch"]);
 
 export function normalizeNativeHookInvocation(params: {
   registration: NativeHookRelayRegistration;
@@ -118,6 +122,42 @@ export function nativeHookRelayParamsWereRewritten(
     return false;
   }
   return stableStringify(candidate) !== originalFingerprint;
+}
+
+/**
+ * Inverts a policy rewrite into the `updatedInput` the pinned Codex handler reads.
+ * Returns undefined when Codex would drop or misread it, so callers fail closed:
+ * Bash and apply_patch keep only `command` (other hook-visible fields must match),
+ * MCP replaces its argument object, and other tools have no reviewed inverse.
+ */
+export function resolveCodexUpdatedToolInput(params: {
+  rawPayload: JsonValue;
+  originalToolInputFingerprint: string;
+  candidate: unknown;
+}): Record<string, JsonValue> | undefined {
+  const payload = isJsonObject(params.rawPayload) ? params.rawPayload : {};
+  const toolName = readOptionalNonEmptyString(payload.tool_name) ?? "";
+  if (!isJsonObject(payload.tool_input) || !isJsonObject(params.candidate)) {
+    return undefined;
+  }
+  if (toolName.startsWith("mcp__")) {
+    return isPluginJsonValue(params.candidate)
+      ? (params.candidate as Record<string, JsonValue>)
+      : undefined;
+  }
+  if (!CODEX_COMMAND_INPUT_HOOK_TOOLS.has(toolName)) {
+    return undefined;
+  }
+  const { command } = params.candidate;
+  // Hooks may mutate the raw input in place; only the fingerprint is the original.
+  const original = JSON.parse(params.originalToolInputFingerprint) as Record<string, JsonValue>;
+  return typeof command === "string" &&
+    command.trim() &&
+    typeof original.command === "string" &&
+    stableStringify({ ...params.candidate, command: original.command }) ===
+      params.originalToolInputFingerprint
+    ? { command }
+    : undefined;
 }
 
 export function readCodexToolResponse(rawPayload: JsonValue): unknown {
