@@ -66,6 +66,15 @@ function invokeRelay(
   return invokeNativeHookRelay({ provider: "codex", relayId, event, rawPayload, ...options });
 }
 
+/** Array slot and toJSON tricks that serialize even though Object.values skips them. */
+function withHiddenArraySlot(first: number, hidden: number) {
+  return Object.defineProperty([first], "1", { value: hidden, enumerable: false });
+}
+
+function withHiddenToJson(serialized: unknown) {
+  return Object.defineProperty({}, "toJSON", { value: () => serialized, enumerable: false });
+}
+
 /** Sends Codex's exact hook stdin text through the real CLI into the real relay. */
 async function rewriteMcpThroughCli(
   toolInputText: string,
@@ -1846,6 +1855,16 @@ describe("native hook relay registry", () => {
       rewrite: { recordId: 1, history: [{ id: 9007199254740992 }] },
     },
     {
+      name: "a rounded integer copied into a non-enumerable array slot",
+      toolInput: '{"items":[9007199254740993],"label":"old"}',
+      rewrite: { items: withHiddenArraySlot(0, 9007199254740992), label: "new" },
+    },
+    {
+      name: "a rounded integer returned by a non-enumerable toJSON",
+      toolInput: '{"recordId":9007199254740993,"label":"old"}',
+      rewrite: { recordId: withHiddenToJson(9007199254740992) },
+    },
+    {
       name: "an overflowing number moved by an array prepend",
       toolInput: '{"items":[1e400],"label":"old"}',
       rewrite: { items: [0, null] },
@@ -1885,6 +1904,12 @@ describe("native hook relay registry", () => {
       toolInput: '{"meta":{"recordId":9007199254740993,"note":"old"},"label":"old"}',
       rewrite: { meta: { note: "new" } },
       updatedInput: { meta: { note: "new" }, label: "old" },
+    },
+    {
+      name: "sends what serialization produces, not the live object",
+      toolInput: '{"items":[1.0],"meta":{"note":"old"},"label":"old"}',
+      rewrite: { items: withHiddenArraySlot(0, 5), meta: withHiddenToJson({ note: "new" }) },
+      updatedInput: { items: [0, 5], meta: { note: "new" }, label: "old" },
     },
     {
       name: "replaces an array element holding an inexact number",

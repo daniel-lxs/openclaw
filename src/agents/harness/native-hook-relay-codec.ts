@@ -143,13 +143,17 @@ export function resolveCodexUpdatedToolInput(params: {
     return undefined;
   }
   if (toolName.startsWith("mcp__")) {
-    return isPluginJsonValue(params.candidate) &&
+    const outgoing = isPluginJsonValue(params.candidate)
+      ? snapshotJsonObject(params.candidate)
+      : undefined;
+    return outgoing &&
+      isPluginJsonValue(outgoing) &&
       keepsOnlyExactNumbers({
         inexactNumberPaths: payload[NATIVE_HOOK_INEXACT_NUMBER_PATHS_FIELD],
         originalToolInputFingerprint: params.originalToolInputFingerprint,
-        candidate: params.candidate,
+        outgoing,
       })
-      ? (params.candidate as Record<string, JsonValue>)
+      ? outgoing
       : undefined;
   }
   if (!CODEX_COMMAND_INPUT_HOOK_TOOLS.has(toolName)) {
@@ -168,6 +172,20 @@ export function resolveCodexUpdatedToolInput(params: {
 }
 
 /**
+ * Checks and sends the serialized form, so a plugin object's non-enumerable slots,
+ * getters, or toJSON cannot make the checked value differ from the sent one.
+ */
+function snapshotJsonObject(value: unknown): Record<string, JsonValue> | undefined {
+  try {
+    const serialized = JSON.stringify(value);
+    const snapshot: unknown = JSON.parse(serialized);
+    return isJsonObject(snapshot) ? (snapshot as Record<string, JsonValue>) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Matches by value, not path: a hook only ever holds the altered number, so a kept
  * copy equals it wherever an array or object edit moved it. An unrelated number
  * with the same value also denies; a copy the hook reformats is not detectable.
@@ -175,7 +193,7 @@ export function resolveCodexUpdatedToolInput(params: {
 function keepsOnlyExactNumbers(params: {
   inexactNumberPaths: unknown;
   originalToolInputFingerprint: string;
-  candidate: unknown;
+  outgoing: Record<string, JsonValue>;
 }): boolean {
   if (typeof params.inexactNumberPaths !== "string") {
     return false;
@@ -186,7 +204,7 @@ function keepsOnlyExactNumbers(params: {
   }
   const original: unknown = JSON.parse(params.originalToolInputFingerprint);
   const inexactValues = new Set(paths.map((path) => readJsonPath(original, path)));
-  return !containsAnyValue(params.candidate, inexactValues);
+  return !containsAnyValue(params.outgoing, inexactValues);
 }
 
 function containsAnyValue(value: unknown, targets: ReadonlySet<unknown>): boolean {
