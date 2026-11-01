@@ -1935,6 +1935,27 @@ describe("native hook relay registry", () => {
     });
   });
 
+  it.each(['{"paths":[]}', "[[1]]"])("denies an MCP rewrite with path record %s", async (paths) => {
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([
+        {
+          hookName: "before_tool_call",
+          handler: vi.fn(async () => ({ params: { query: "new" } })),
+        },
+      ]),
+    );
+    const relay = registerAgentRelay();
+    const response = await invokeRelay(relay.relayId, "pre_tool_use", {
+      hook_event_name: "PreToolUse",
+      cwd: "/repo",
+      tool_name: "mcp__notes__search",
+      tool_use_id: "native-malformed-paths",
+      tool_input: { query: "old" },
+      openclaw_inexact_number_paths: paths,
+    });
+    expect(JSON.parse(response.stdout).hookSpecificOutput.permissionDecision).toBe("deny");
+  });
+
   it("denies an MCP rewrite when inexact numbers exceed the tracked bound", async () => {
     const values = Array.from({ length: 10_000 }, () => "1.0").join(",");
     const { permissionDecision } = await rewriteMcpThroughCli(

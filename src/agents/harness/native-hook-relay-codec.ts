@@ -147,7 +147,6 @@ export function resolveCodexUpdatedToolInput(params: {
       ? snapshotJsonObject(params.candidate)
       : undefined;
     return outgoing &&
-      isPluginJsonValue(outgoing) &&
       keepsOnlyExactNumbers({
         inexactNumberPaths: payload[NATIVE_HOOK_INEXACT_NUMBER_PATHS_FIELD],
         originalToolInputFingerprint: params.originalToolInputFingerprint,
@@ -161,9 +160,10 @@ export function resolveCodexUpdatedToolInput(params: {
   }
   const { command } = params.candidate;
   // Hooks may mutate the raw input in place; only the fingerprint is the original.
-  const original = JSON.parse(params.originalToolInputFingerprint) as Record<string, JsonValue>;
+  const original: unknown = JSON.parse(params.originalToolInputFingerprint);
   return typeof command === "string" &&
     command.trim() &&
+    isJsonObject(original) &&
     typeof original.command === "string" &&
     stableStringify({ ...params.candidate, command: original.command }) ===
       params.originalToolInputFingerprint
@@ -179,7 +179,7 @@ function snapshotJsonObject(value: unknown): Record<string, JsonValue> | undefin
   try {
     const serialized = JSON.stringify(value);
     const snapshot: unknown = JSON.parse(serialized);
-    return isJsonObject(snapshot) ? (snapshot as Record<string, JsonValue>) : undefined;
+    return isPluginJsonValue(snapshot) && isJsonObject(snapshot) ? snapshot : undefined;
   } catch {
     return undefined;
   }
@@ -198,13 +198,26 @@ function keepsOnlyExactNumbers(params: {
   if (typeof params.inexactNumberPaths !== "string") {
     return false;
   }
-  const paths = JSON.parse(params.inexactNumberPaths) as string[][];
+  const paths: unknown = JSON.parse(params.inexactNumberPaths);
+  if (!isJsonKeyPathList(paths)) {
+    return false;
+  }
   if (paths.length === 0) {
     return true;
   }
   const original: unknown = JSON.parse(params.originalToolInputFingerprint);
   const inexactValues = new Set(paths.map((path) => readJsonPath(original, path)));
   return !containsAnyValue(params.outgoing, inexactValues);
+}
+
+function isJsonKeyPathList(value: unknown): value is string[][] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (path: unknown) =>
+        Array.isArray(path) && path.every((key: unknown) => typeof key === "string"),
+    )
+  );
 }
 
 function containsAnyValue(value: unknown, targets: ReadonlySet<unknown>): boolean {
