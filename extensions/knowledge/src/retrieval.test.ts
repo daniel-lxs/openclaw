@@ -524,3 +524,48 @@ it("an index built before row tracking is repopulated, never left empty and read
   });
   expect(await f.total({ query: "lanternword" })).toBe(1);
 });
+
+it("a current-only search that matches only superseded records follows superseded_by to the current version", async () => {
+  const f = await fixture();
+  // v1 → v2 → v3: only v1 holds the query's words; v3 is the current version.
+  await f.put(
+    "pilot_v1",
+    "Pilot schedule",
+    "The garden pilot starts in May at the Harbor plot.\n",
+    {
+      lifecycle: "superseded",
+      superseded_by: "pilot_v2",
+    },
+  );
+  await f.put("pilot_v2", "Pilot schedule", "Pilot pushed back a month.\n", {
+    lifecycle: "superseded",
+    superseded_by: "pilot_v3",
+  });
+  await f.put("pilot_v3", "Pilot schedule", "Moved to June after the soil test.\n");
+  // A chain that ends in a withdrawn record yields nothing.
+  await f.put("venue_v1", "Venue", "Meet at the Harbor boathouse.\n", {
+    lifecycle: "superseded",
+    superseded_by: "venue_v2",
+  });
+  await f.put("venue_v2", "Venue", "Meet at the library.\n", { lifecycle: "withdrawn" });
+
+  const result = await f.service.grep({ query: "harbor plot", detail: "full" }, f.owner);
+  expect(Check(contract.operations.grep.output, result)).toBeTruthy();
+  expect(ids(result)).toStrictEqual(["pilot_v3"]);
+  expect(result.total).toBe(1);
+  expect(result.hits[0]!.matches).toStrictEqual(["superseded"]);
+  expect(result.hits[0]!.via).toStrictEqual({ id: "pilot_v1", title: "Pilot schedule" });
+  const compact = await f.service.grep({ query: "harbor plot" }, f.owner);
+  expect(Check(contract.operations.grep.output, compact)).toBeTruthy();
+  expect(compact.hits[0]!.via).toStrictEqual({ id: "pilot_v1", title: "Pilot schedule" });
+
+  // Direct matches come first and the current record is listed once.
+  expect(ids(await f.service.grep({ query: "pilot", mode: "any" }, f.owner))).toStrictEqual([
+    "pilot_v3",
+  ]);
+  // Withdrawn successors stay hidden; explicit history filters are unchanged.
+  expect(await f.total({ query: "boathouse" })).toBe(0);
+  expect(
+    ids(await f.service.grep({ query: "harbor plot", lifecycle: "superseded" }, f.owner)),
+  ).toStrictEqual(["pilot_v1"]);
+});

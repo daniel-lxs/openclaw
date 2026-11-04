@@ -31,7 +31,10 @@ Knowledge is a `kind: "memory"` plugin. Only one plugin owns
 | `knowledge`                                 | Memory provider with typed records, mandatory evidence on claims, keyword retrieval, journaled writes, local Git history, and a native explorer. |
 
 Knowledge does not use embeddings. Retrieval is keyword (SQLite FTS5) plus exact
-identity lookup and structured date queries. Selecting Knowledge does not migrate,
+identity lookup and structured date queries. A search for current records also
+matches the superseded records it hides and returns what replaced them (following
+`superseded_by`), after the direct matches, with `matches: ["superseded"]` and
+`via` naming the earlier record. Selecting Knowledge does not migrate,
 change, or delete `memory-core` data. Switching back leaves the vault intact.
 
 ## Enable Knowledge

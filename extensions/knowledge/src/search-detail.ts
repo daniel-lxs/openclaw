@@ -47,6 +47,7 @@ function compactHit(hit: FullHit): CompactHit {
     record: { id, title, kind, type, path, revision, lifecycle, valid },
     snippet: { field: hit.snippet.field, text: text.slice(from, to) },
     matches: hit.matches,
+    ...(hit.via ? { via: hit.via } : {}),
   };
 }
 

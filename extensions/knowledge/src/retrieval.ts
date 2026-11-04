@@ -353,6 +353,65 @@ export function verifyKeywordIndex(
   }
 }
 
+/** Superseded-by steps followed from one earlier record before giving up. */
+const LATER_WORK_MAX_STEPS = 8;
+
+/** Current records reached from superseded records that match `expression`. A
+ * current-only search hides superseded records, so a query worded like the old
+ * version would otherwise find nothing; this follows `superseded_by` (written by
+ * knowledge_supersede and knowledge_correct) to whatever replaced it. Successors
+ * must be in `current` (eligible and passing the caller's filters); a chain that
+ * ends in a withdrawn, expired or filtered-out record yields nothing. */
+function laterWork(
+  db: DatabaseSync,
+  history: LoadedRecord[],
+  current: LoadedRecord[],
+  expression: string,
+  skip: Set<string>,
+) {
+  const earlier = history.filter((r) => r.lifecycle === "superseded" && r.metadata.superseded_by);
+  if (!earlier.length) {
+    return [];
+  }
+  db.exec("DROP TABLE IF EXISTS temp.keyword_earlier_v1");
+  db.exec(
+    "CREATE VIRTUAL TABLE temp.keyword_earlier_v1 USING fts5(id UNINDEXED, title, aliases, body, tokenize='unicode61 remove_diacritics 2')",
+  );
+  const insert = db.prepare(
+    "INSERT INTO temp.keyword_earlier_v1(id,title,aliases,body) VALUES (?,?,?,?)",
+  );
+  for (const r of earlier) {
+    insert.run(r.id, r.title, (r.metadata.aliases ?? []).join("\n"), r.body);
+  }
+  const matched = db
+    .prepare(
+      "SELECT id FROM keyword_earlier_v1 WHERE keyword_earlier_v1 MATCH ? ORDER BY bm25(keyword_earlier_v1,0,8,6,1),id",
+    )
+    .all(expression)
+    .map((row) => String(row.id));
+  db.exec("DROP TABLE temp.keyword_earlier_v1");
+  const byId = new Map(history.map((r) => [r.id, r])),
+    now = new Map(current.map((r) => [r.id, r])),
+    out: { record: LoadedRecord; via: LoadedRecord }[] = [],
+    seen = new Set(skip);
+  for (const id of matched) {
+    const via = byId.get(id)!;
+    let next = via.metadata.superseded_by;
+    for (let step = 0; next && step < LATER_WORK_MAX_STEPS && !now.has(next); step++) {
+      next =
+        byId.get(next)?.lifecycle === "superseded"
+          ? byId.get(next)!.metadata.superseded_by
+          : undefined;
+    }
+    const record = next ? now.get(next) : undefined;
+    if (record && !seen.has(record.id)) {
+      seen.add(record.id);
+      out.push({ record, via });
+    }
+  }
+  return out;
+}
+
 /** Called only inside the storage authority/identity fence, using the latest validated snapshot. */
 export function keywordSearch(
   db: DatabaseSync,
@@ -458,16 +517,36 @@ export function keywordSearch(
             -Number(row.score),
           );
         });
+        // A current-only search also follows matches in the superseded records it
+        // hides to their current versions, listed after every direct match.
+        let later: ReturnType<typeof laterWork> = [];
+        if ((input.lifecycle ?? "active") === "active") {
+          const direct = new Set(
+            db
+              .prepare(`SELECT id FROM ${corpus} WHERE ${corpus} MATCH ?`)
+              .all(expression)
+              .map((r) => String(r.id)),
+          );
+          later = laterWork(db, eligible(data, withdrawn, true), selected, expression, direct);
+          const from = Math.max(0, offset - total);
+          for (const { record, via } of later.slice(from, from + limit - hits.length)) {
+            const result = hit(record, "body", 0, ["superseded"], null);
+            result.snippet.matchLocated = false;
+            result.via = { id: via.id, title: via.title };
+            hits.push(result);
+          }
+        }
         if (corpus !== table) {
           db.exec("DROP TABLE temp.keyword_query_v1");
         }
+        const combined = total + later.length;
         return {
           ...base,
           freshness: queryFreshness(data.checkedAt, indexedAt),
           hits,
           resultCount: hits.length,
-          total,
-          nextOffset: offset + limit < total ? offset + limit : null,
+          total: combined,
+          nextOffset: offset + limit < combined ? offset + limit : null,
           index: {
             state: "ready",
             lag: false,

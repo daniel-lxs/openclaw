@@ -31,6 +31,15 @@ export const SearchInput = Type.Object(
   { additionalProperties: false },
 );
 export type SearchInput = Static<typeof SearchInput>;
+/** Set when the query matched only an earlier record that this one superseded
+ * (`matches: ["superseded"]`); names that earlier record. */
+const Via = Type.Object(
+  { id: text(96), title: text(500) },
+  {
+    description:
+      "The query matched this earlier, superseded record; the hit is its current version.",
+  },
+);
 const locator = Type.Object({
   path: text(500),
   sha256: text(64),
@@ -61,6 +70,7 @@ const hit = Type.Object({
     truncated: Type.Boolean(),
   }),
   matches: Type.Array(text(20), { maxItems: 4 }),
+  via: Type.Optional(Via),
   score: Type.Union([Type.Number(), Type.Null()]),
   attribution: text(1000),
   assertionOrigin: text(30),
@@ -87,6 +97,7 @@ export const CompactHit = Type.Object(
       text: text(200),
     }),
     matches: Type.Array(text(20), { maxItems: 4 }),
+    via: Type.Optional(Via),
   },
   { additionalProperties: false },
 );
