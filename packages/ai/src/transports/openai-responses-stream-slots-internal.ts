@@ -61,6 +61,7 @@ export function createResponsesOutputTracker(params: {
   let providerToolObserved = false;
   let visibleTextEmitted = false;
   let terminalAllowsRetry = false;
+  let refusalObserved = false;
   const identity = (item: ResponsesOutputIdentityItem): string | undefined => {
     if ((item.type === "reasoning" || item.type === "message") && item.id) {
       return `${item.type}:${item.id}`;
@@ -112,6 +113,9 @@ export function createResponsesOutputTracker(params: {
     return output;
   };
   return {
+    get hasRefusal() {
+      return refusalObserved;
+    },
     trackStream(sink: ResponsesEventSink): ResponsesEventSink {
       return {
         push(event) {
@@ -135,11 +139,21 @@ export function createResponsesOutputTracker(params: {
         event.type === "response.output_item.done"
       ) {
         providerToolObserved ||= isResponsesProviderTool(event.item);
+        refusalObserved ||=
+          event.item.type === "message" &&
+          (event.item.content ?? []).some((part) => part.type === "refusal");
+      } else if (
+        event.type === "response.refusal.delta" ||
+        event.type === "response.refusal.done" ||
+        ((event.type === "response.content_part.added" ||
+          event.type === "response.content_part.done") &&
+          event.part.type === "refusal")
+      ) {
+        refusalObserved = true;
       } else if (event.type === "response.completed" || event.type === "response.incomplete") {
-        let terminalHasRefusal = false;
         for (const item of event.response.output ?? []) {
           providerToolObserved ||= isResponsesProviderTool(item);
-          terminalHasRefusal ||=
+          refusalObserved ||=
             item.type === "message" && (item.content ?? []).some((part) => part.type === "refusal");
         }
         terminalAllowsRetry =
@@ -147,7 +161,7 @@ export function createResponsesOutputTracker(params: {
           event.response.status === "completed" &&
           event.response.error == null &&
           event.response.incomplete_details == null &&
-          !terminalHasRefusal;
+          !refusalObserved;
       }
       // Physical activity always preserves liveness; only advancing output
       // resets progress. Peek must not preempt the reducer's identity validators.

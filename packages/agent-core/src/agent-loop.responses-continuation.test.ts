@@ -244,3 +244,154 @@ describe("Agent next-turn preparation", () => {
     },
   );
 });
+
+it.each([
+  {
+    label: "streamed commentary without a snapshot",
+    phase: "commentary",
+    streamed: true,
+    continueWork: true,
+  },
+  {
+    label: "a final snapshot after streamed commentary",
+    phase: "commentary",
+    streamed: true,
+    withFinal: true,
+    continueWork: false,
+  },
+  { label: "snapshot commentary", phase: "commentary", continueWork: true },
+  { label: "a snapshot refusal", phase: "commentary", refusal: true, continueWork: false },
+  {
+    label: "a streamed refusal without a snapshot",
+    phase: "commentary",
+    refusal: true,
+    streamed: true,
+    continueWork: false,
+  },
+  { label: "explicit continuation", phase: "commentary", endTurn: false, continueWork: true },
+  { label: "explicit turn end", phase: "commentary", endTurn: true, continueWork: false },
+  { label: "final answer", phase: "final_answer", continueWork: false },
+  { label: "unphased answer", continueWork: false },
+  {
+    label: "commentary followed by a final answer",
+    phase: "commentary",
+    withFinal: true,
+    continueWork: false,
+  },
+])(
+  "Responses follows through after $label without overriding terminal answers",
+  async ({ phase, streamed, endTurn, withFinal, refusal, continueWork }) => {
+    const requests: Record<string, unknown>[] = [];
+    const executed: string[] = [];
+    const server = createServer((req, res) => {
+      let body = "";
+      req.setEncoding("utf8");
+      req.on("data", (chunk: string) => {
+        body += chunk;
+      });
+      req.on("end", () => {
+        requests.push(JSON.parse(body) as Record<string, unknown>);
+        const index = requests.length;
+        const textItem = (id: string, text: string, messagePhase?: string) => ({
+          type: "message",
+          id,
+          role: "assistant",
+          status: "completed",
+          ...(messagePhase ? { phase: messagePhase } : {}),
+          content:
+            refusal && id === "msg_progress"
+              ? [{ type: "refusal", refusal: "I cannot help with that request." }]
+              : [{ type: "output_text", text, annotations: [] }],
+        });
+        const output =
+          index === 2
+            ? [
+                {
+                  type: "function_call",
+                  id: "fc_check",
+                  call_id: "call_check",
+                  name: "check",
+                  arguments: "{}",
+                  status: "completed",
+                },
+              ]
+            : index === 1
+              ? [
+                  textItem("msg_progress", "I'll look into it now.", phase),
+                  ...(withFinal
+                    ? [textItem("msg_answer", "Already checked.", "final_answer")]
+                    : []),
+                ]
+              : [textItem("msg_final", "The check passed.", "final_answer")];
+        writeOpenAiResponsesSse(res, [
+          ...(streamed
+            ? output.slice(0, 1).map((item, output_index) => ({
+                type: "response.output_item.done",
+                output_index,
+                item,
+              }))
+            : []),
+          {
+            type: "response.completed",
+            response: {
+              id: "resp_" + index,
+              status: "completed",
+              ...(index === 1 && endTurn !== undefined ? { end_turn: endTurn } : {}),
+              output: streamed && !withFinal ? [] : output,
+              usage: { input_tokens: 5, output_tokens: 12, total_tokens: 17 },
+            },
+          },
+        ]);
+      });
+    });
+    const baseUrl = await listenLoopback(server);
+    const responseModel: Model<"openai-responses"> = {
+      ...baseModel,
+      provider: "openai",
+      api: "openai-responses",
+      baseUrl: baseUrl + "/v1",
+      contextWindow: 8192,
+      maxTokens: 256,
+    };
+    try {
+      const run = captureAgentLoop(
+        [user("Check the result and report it.")],
+        { systemPrompt: "", messages: [], tools: [makeTool("check", executed)] },
+        { ...config, model: responseModel },
+        undefined,
+        (_model, context, options) =>
+          streamOpenAIResponses(responseModel, context, { ...options, apiKey: "test-key" }),
+      );
+      const result = await run.result;
+      expect(executed).toEqual(continueWork ? ["check"] : []);
+      expect(requests).toHaveLength(continueWork ? 3 : 1);
+      expect(run.events.filter((event) => event.type === "agent_end")).toHaveLength(1);
+      if (continueWork) {
+        expect(result.at(-1)).toMatchObject({
+          role: "assistant",
+          content: [expect.objectContaining({ text: "The check passed." })],
+        });
+        expect(requests[1]?.input).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ type: "message", role: "assistant", phase: "commentary" }),
+          ]),
+        );
+        expect(requests[2]?.input).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: "function_call_output",
+              call_id: "call_check",
+              output: "check result",
+            }),
+          ]),
+        );
+        expect(JSON.stringify(requests)).not.toContain("openai_responses_terminal");
+      }
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  },
+);

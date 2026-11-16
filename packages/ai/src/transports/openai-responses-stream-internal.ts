@@ -689,7 +689,7 @@ export async function processResponsesStream<TApi extends Api>(
             event.type === "response.completed" ? prepareTerminalToolCalls(items) : undefined;
           terminal.recoverTerminalOutput(items, completeToolCall);
         }
-        terminalResponse = event.type === "response.completed" ? event.response : null;
+        terminalResponse = terminal.finalizeTurn(event.response, event.type);
         if (
           output.stopReason === "stop" &&
           output.content.some((block) => block.type === "toolCall")

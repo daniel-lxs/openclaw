@@ -27,6 +27,11 @@ For embedded OpenAI Responses turns, `response.completed` finishes one model
 response. If the provider sends `end_turn: false`, the loop requests another
 response even when the completed response contains only text. Existing
 cancellation, host stop decisions, and intentional tool termination still apply.
+When `end_turn` is absent, a response containing only text explicitly marked
+`commentary` also continues: a progress update is not a final answer. An explicit
+`end_turn: true`, a final-answer block, unphased answer text, or a structured refusal
+still ends the turn.
+This uses provider metadata, not phrases such as “I’ll look into it.”
 
 Each completed or incomplete Responses response also carries an
 `openai_responses_terminal` entry in the saved assistant message's `diagnostics`.

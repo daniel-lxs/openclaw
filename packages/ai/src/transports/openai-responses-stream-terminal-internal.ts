@@ -36,6 +36,7 @@ import type {
   Usage,
 } from "../types.js";
 import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.js";
+import { parseOpenAIResponsesTextSignature } from "../utils/text-signature.js";
 import { captureOpenAIResponsesCompaction } from "./openai-responses-compaction-replay.js";
 import {
   OPENAI_RESPONSES_COMPACTION_REPLAY_TYPE,
@@ -44,7 +45,10 @@ import {
 } from "./openai-responses-contracts.js";
 import { normalizeOpenAIResponsesReasoningReplayItem } from "./openai-responses-replay.js";
 import type { ResponsesOutputTracker } from "./openai-responses-stream-slots-internal.js";
-import type { ResponsesStreamOptions } from "./openai-responses-stream-types-internal.js";
+import type {
+  CompletedResponse,
+  ResponsesStreamOptions,
+} from "./openai-responses-stream-types-internal.js";
 import {
   IncompleteToolCallError,
   parseTerminalToolCallArguments,
@@ -450,9 +454,6 @@ export function createResponsesTerminalController(params: {
     if (terminal.errorMessage !== undefined) {
       output.errorMessage = terminal.errorMessage;
     }
-    if (terminalEventType === "response.completed" && typeof response.end_turn === "boolean") {
-      output.endTurn = response.end_turn;
-    }
     const incompleteReason = response.incomplete_details?.reason;
     const incompleteCall = response.output?.find(
       (item) => item.type === "function_call" && item.status && item.status !== "completed",
@@ -507,7 +508,34 @@ export function createResponsesTerminalController(params: {
       throw error;
     }
   };
+  // Run after terminal reconstruction: a snapshot may supply a missing final answer.
+  const finalizeTurn = (
+    response: CompletedResponse & { end_turn?: unknown },
+    eventType: "response.completed" | "response.incomplete",
+  ) => {
+    if (eventType !== "response.completed") {
+      return null;
+    }
+    if (typeof response.end_turn === "boolean") {
+      output.endTurn = response.end_turn;
+    } else if (
+      response.end_turn === undefined &&
+      output.stopReason === "stop" &&
+      !params.outputs.hasRefusal &&
+      blocks.some((block) => block.type === "text" && block.text.trim().length > 0) &&
+      blocks.every(
+        (block) =>
+          block.type !== "text" ||
+          parseOpenAIResponsesTextSignature(block.textSignature)?.phase === "commentary",
+      )
+    ) {
+      // response.completed closes a response; commentary alone still owes a continuation.
+      output.endTurn = false;
+    }
+    return response;
+  };
   return {
+    finalizeTurn,
     finalizeResponse,
     finalizeFailedResponse: finalizeTerminalFacts,
     recordIncompleteToolCall,
