@@ -1,6 +1,4 @@
 import type { AssistantMessage, Model } from "@openclaw/llm-core";
-import { NON_FINAL_RESPONSE_LIMIT_CODE } from "./incomplete-turn.js";
-import { withAssistantTurnTaint } from "./turn-taint.js";
 import type { AgentEvent, AgentMessage } from "./types.js";
 
 /** Canonical empty aborted/error assistant recorded when a run ends without output. */
@@ -27,58 +25,6 @@ export function createFailureMessage(
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
     },
   };
-}
-
-export function createNonFinalResponseLimitMessage(model: Model): AssistantMessage {
-  const reason =
-    "The model repeatedly returned a non-final response without tool progress. Stopped instead of requesting another response.";
-  return {
-    ...createFailureMessage(model, new Error(reason), false),
-    endTurn: true,
-    errorCode: NON_FINAL_RESPONSE_LIMIT_CODE,
-    content: [{ type: "text", text: reason }],
-  };
-}
-
-/** Complete an aborted loop; callers return immediately when this reports true. */
-export async function stopAbortedAgentLoop(params: {
-  model: Model;
-  signal: AbortSignal | undefined;
-  newMessages: AgentMessage[];
-  emit: (event: AgentEvent) => Promise<void> | void;
-  turnOpen: boolean;
-  turnTainted: boolean;
-  isLocalError?: (error: unknown) => boolean;
-}): Promise<boolean> {
-  const { signal, newMessages, emit } = params;
-  if (!signal?.aborted) {
-    return false;
-  }
-  if (params.isLocalError?.(signal.reason)) {
-    throw signal.reason;
-  }
-  // Persist an aborted assistant outcome so session post-processing does not
-  // compact or continue from the preceding toolUse message.
-  const abortedMessage = withAssistantTurnTaint(
-    createFailureMessage(
-      params.model,
-      signal.reason instanceof Error ? signal.reason : new Error("Agent run aborted"),
-      true,
-    ),
-    params.turnTainted,
-  );
-  newMessages.push(abortedMessage);
-  if (!params.turnOpen) {
-    await emit({ type: "turn_start" });
-  }
-  await emit({ type: "message_start", message: abortedMessage });
-  await emit({ type: "message_end", message: abortedMessage });
-  await emit({ type: "turn_end", message: abortedMessage, toolResults: [] });
-  if (!isTurnHandoffAbort(signal)) {
-    await appendInterruptedTurnMessage(newMessages, emit);
-  }
-  await emit({ type: "agent_end", messages: newMessages });
-  return true;
 }
 
 // Not re-exported from the package barrel on purpose: these helpers are
