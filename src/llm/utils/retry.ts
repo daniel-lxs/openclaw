@@ -3,6 +3,7 @@ import {
   WEBSOCKET_NON_RETRYABLE_CLOSE_ERROR_CODE,
 } from "@openclaw/ai/diagnostics";
 import { isProviderRefusalAssistantError } from "@openclaw/llm-core/diagnostics";
+import { NON_FINAL_RESPONSE_LIMIT_CODE } from "../../../packages/agent-core/src/incomplete-turn.js";
 import { TOOL_REPEAT_LIMIT_CODE } from "../../../packages/agent-core/src/tool-repeat-guard.js";
 import { classifyFailoverSignal } from "../../agents/failover/classify.js";
 import {
@@ -19,6 +20,7 @@ import {
 } from "../types.js";
 
 const TERMINAL_ASSISTANT_ERROR_CODES = new Set([
+  NON_FINAL_RESPONSE_LIMIT_CODE,
   TOOL_REPEAT_LIMIT_CODE,
   REPETITIVE_OUTPUT_ERROR_CODE,
   PROVIDER_FAILURE_WITH_OUTPUT_ERROR_CODE,

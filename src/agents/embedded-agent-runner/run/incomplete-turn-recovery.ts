@@ -36,7 +36,7 @@ import type { EmbeddedRunAttemptResult } from "./types.js";
 // Allow one immediate continuation plus one follow-up continuation before
 // surfacing the existing incomplete-turn error path.
 export const DEFAULT_REASONING_ONLY_RETRY_LIMIT = 2;
-export const DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT = 1;
+export { DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT } from "../../../../packages/agent-core/src/incomplete-turn.js";
 const REASONING_ONLY_RETRY_INSTRUCTION =
   "Your turn ended without a final reply. Continue from the current conversation and answer the user's request now. Do not repeat completed actions or restart the task. Do not restate your reasoning.";
 const EMPTY_RESPONSE_RETRY_INSTRUCTION =

@@ -260,6 +260,14 @@ it.each([
     continueWork: false,
   },
   { label: "snapshot commentary", phase: "commentary", continueWork: true },
+  { label: "repeated commentary", repeated: true, continueWork: false },
+  { label: "new user input after commentary", repeated: true, steer: true, continueWork: false },
+  {
+    label: "commentary after tool progress",
+    phase: "commentary",
+    afterTool: true,
+    continueWork: true,
+  },
   { label: "a snapshot refusal", phase: "commentary", refusal: true, continueWork: false },
   {
     label: "a streamed refusal without a snapshot",
@@ -280,7 +288,17 @@ it.each([
   },
 ])(
   "Responses follows through after $label without overriding terminal answers",
-  async ({ phase, streamed, endTurn, withFinal, refusal, continueWork }) => {
+  async ({
+    phase,
+    streamed,
+    endTurn,
+    withFinal,
+    refusal,
+    repeated,
+    afterTool,
+    steer,
+    continueWork,
+  }) => {
     const requests: Record<string, unknown>[] = [];
     const executed: string[] = [];
     const server = createServer((req, res) => {
@@ -304,25 +322,28 @@ it.each([
               : [{ type: "output_text", text, annotations: [] }],
         });
         const output =
-          index === 2
-            ? [
-                {
-                  type: "function_call",
-                  id: "fc_check",
-                  call_id: "call_check",
-                  name: "check",
-                  arguments: "{}",
-                  status: "completed",
-                },
-              ]
-            : index === 1
+          // The fourth response is a fixture escape hatch so the unfixed loop fails without hanging.
+          (repeated && index < (steer ? 3 : 4)) || (afterTool && index === 3)
+            ? [textItem("msg_" + index, "Still checking " + index, "commentary")]
+            : index === 2
               ? [
-                  textItem("msg_progress", "I'll look into it now.", phase),
-                  ...(withFinal
-                    ? [textItem("msg_answer", "Already checked.", "final_answer")]
-                    : []),
+                  {
+                    type: "function_call",
+                    id: "fc_check",
+                    call_id: "call_check",
+                    name: "check",
+                    arguments: "{}",
+                    status: "completed",
+                  },
                 ]
-              : [textItem("msg_final", "The check passed.", "final_answer")];
+              : index === 1
+                ? [
+                    textItem("msg_progress", "I'll look into it now.", phase),
+                    ...(withFinal
+                      ? [textItem("msg_answer", "Already checked.", "final_answer")]
+                      : []),
+                  ]
+                : [textItem("msg_final", "The check passed.", "final_answer")];
         writeOpenAiResponsesSse(res, [
           ...(streamed
             ? output.slice(0, 1).map((item, output_index) => ({
@@ -353,24 +374,52 @@ it.each([
       contextWindow: 8192,
       maxTokens: 256,
     };
+    let steered = false;
     try {
       const run = captureAgentLoop(
         [user("Check the result and report it.")],
         { systemPrompt: "", messages: [], tools: [makeTool("check", executed)] },
-        { ...config, model: responseModel },
+        {
+          ...config,
+          model: responseModel,
+          getSteeringMessages: async () => {
+            if (steer && requests.length === 2 && !steered) {
+              steered = true;
+              return [user("Finish from the current state.")];
+            }
+            return [];
+          },
+        },
         undefined,
         (_model, context, options) =>
           streamOpenAIResponses(responseModel, context, { ...options, apiKey: "test-key" }),
       );
       const result = await run.result;
       expect(executed).toEqual(continueWork ? ["check"] : []);
-      expect(requests).toHaveLength(continueWork ? 3 : 1);
+      expect(requests).toHaveLength(
+        steer ? 3 : repeated ? 2 : afterTool ? 4 : continueWork ? 3 : 1,
+      );
+      if (repeated && !steer) {
+        expect(result.at(-1)).toMatchObject({
+          role: "assistant",
+          stopReason: "error",
+          errorCode: "non_final_response_limit",
+        });
+        const assistants = result.filter((message) => message.role === "assistant");
+        expect(assistants.map((message) => message.usage.output)).toEqual([12, 12, 0]);
+        expect(assistants.slice(0, 2)).toMatchObject([
+          { content: [{ text: "Still checking 1" }] },
+          { content: [{ text: "Still checking 2" }] },
+        ]);
+      }
       expect(run.events.filter((event) => event.type === "agent_end")).toHaveLength(1);
-      if (continueWork) {
+      if (continueWork || steer) {
         expect(result.at(-1)).toMatchObject({
           role: "assistant",
           content: [expect.objectContaining({ text: "The check passed." })],
         });
+      }
+      if (continueWork) {
         expect(requests[1]?.input).toEqual(
           expect.arrayContaining([
             expect.objectContaining({ type: "message", role: "assistant", phase: "commentary" }),

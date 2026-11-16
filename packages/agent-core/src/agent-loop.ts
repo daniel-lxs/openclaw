@@ -26,6 +26,7 @@ import {
   type ExecutedToolCallBatch,
 } from "./agent-stream-response.js";
 import { TranscriptNotContinuableError } from "./errors.js";
+import { DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT } from "./incomplete-turn.js";
 import {
   getInternalBeforeRequest,
   getInternalToolTurnInputScope,
@@ -67,7 +68,9 @@ import {
 import {
   appendInterruptedTurnMessage,
   createFailureMessage,
+  createNonFinalResponseLimitMessage,
   isTurnHandoffAbort,
+  stopAbortedAgentLoop,
 } from "./turn-interruption.js";
 import { isActiveTurnTainted, toolResultTaintsTurn, withAssistantTurnTaint } from "./turn-taint.js";
 import type {
@@ -160,47 +163,27 @@ async function runLoop(
   let firstTurn = true;
   let prepareContinuation: AgentLoopTurnUpdate["prepareContinuation"];
   let turnOpen = true;
+  let nonFinalResponses = 0;
   let turnTainted = isActiveTurnTainted(state.context.messages);
   const toolRepeatState = initialConfig.toolRepeatState ?? createToolRepeatState();
   let pendingMessages: AgentMessage[] = [];
-  const stopIfAborted = async (): Promise<boolean> => {
-    if (!signal?.aborted) {
-      return false;
-    }
-    if (runtime?.isLocalError?.(signal.reason)) {
-      throw signal.reason;
-    }
-    // Persist an aborted assistant outcome so session post-processing does not
-    // compact or continue from the preceding toolUse message.
-    const abortedMessage = withAssistantTurnTaint(
-      createFailureMessage(
-        config.model,
-        signal.reason instanceof Error ? signal.reason : new Error("Agent run aborted"),
-        true,
-      ),
+  const stopIfAborted = () =>
+    stopAbortedAgentLoop({
+      model: config.model,
+      signal,
+      newMessages,
+      emit,
+      turnOpen,
       turnTainted,
-    );
-    newMessages.push(abortedMessage);
-    if (!turnOpen) {
-      await emit({ type: "turn_start" });
-      turnOpen = true;
-    }
-    await emit({ type: "message_start", message: abortedMessage });
-    await emit({ type: "message_end", message: abortedMessage });
-    await emit({ type: "turn_end", message: abortedMessage, toolResults: [] });
-    turnOpen = false;
-    if (!isTurnHandoffAbort(signal)) {
-      await appendInterruptedTurnMessage(newMessages, emit);
-    }
-    await emit({ type: "agent_end", messages: newMessages });
-    return true;
-  };
+      isLocalError: runtime?.isLocalError,
+    });
 
   const commitPendingMessages = () => {
     const messagesToInject = pendingMessages;
     pendingMessages = [];
     return commitInputMessages(messagesToInject, state.context, config, emit, newMessages, () => {
       turnTainted = false;
+      nonFinalResponses = 0;
       resetToolRepeatState(toolRepeatState);
     });
   };
@@ -279,6 +262,17 @@ async function runLoop(
         }
       }
 
+      if (nonFinalResponses > DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT) {
+        const terminalMessage = createNonFinalResponseLimitMessage(config.model);
+        state.context.messages.push(terminalMessage);
+        newMessages.push(terminalMessage);
+        await emit({ type: "message_start", message: terminalMessage });
+        await emit({ type: "message_end", message: terminalMessage });
+        await emit({ type: "turn_end", message: terminalMessage, toolResults: [] });
+        await emit({ type: "agent_end", messages: newMessages });
+        return newMessages;
+      }
+
       const toolPlan: ToolPlanState = { executionStarted: false };
       const streamedSteering = createStreamedSteeringConfig(config);
       const streamed = await streamAgentResponse(
@@ -338,6 +332,14 @@ async function runLoop(
         : undefined;
       const toolResults = executedToolBatch?.messages ?? [];
       turnTainted ||= toolResults.some(toolResultTaintsTurn);
+      // Commentary is not progress. Tools and committed user input reset the streak.
+      nonFinalResponses =
+        message.stopReason === "stop" &&
+        message.endTurn === false &&
+        executedToolBatch === undefined &&
+        !streamed.continuationRequired
+          ? nonFinalResponses + 1
+          : 0;
       hasMoreToolCalls =
         streamed.continuationRequired ||
         (message.stopReason === "stop" &&
@@ -382,11 +384,9 @@ async function runLoop(
         state.context.messages.push(terminalMessage);
         newMessages.push(terminalMessage);
         await emit({ type: "turn_start" });
-        turnOpen = true;
         await emit({ type: "message_start", message: terminalMessage });
         await emit({ type: "message_end", message: terminalMessage });
         await emit({ type: "turn_end", message: terminalMessage, toolResults: [] });
-        turnOpen = false;
         await emit({ type: "agent_end", messages: newMessages });
         return newMessages;
       }

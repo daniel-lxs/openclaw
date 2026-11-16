@@ -32,6 +32,10 @@ When `end_turn` is absent, a response containing only text explicitly marked
 `end_turn: true`, a final-answer block, unphased answer text, or a structured refusal
 still ends the turn.
 This uses provider metadata, not phrases such as “I’ll look into it.”
+Tool-free nonterminal responses share the existing empty-answer recovery limit:
+one additional model request. A second consecutive nonterminal response ends
+with a terminal error rather than another request. Tool progress or newly
+committed user input resets this streak; commentary alone does not.
 
 Each completed or incomplete Responses response also carries an
 `openai_responses_terminal` entry in the saved assistant message's `diagnostics`.
