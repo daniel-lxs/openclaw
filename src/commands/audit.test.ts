@@ -71,6 +71,24 @@ describe("audit command parsing", () => {
     expect(callGateway).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["--agent", "agentId"],
+    ["--session", "sessionKey"],
+    ["--run", "runId"],
+    ["--execution", "executionId"],
+    ["--channel", "channel"],
+    ["--cursor", "cursor"],
+  ] as const)("rejects blank %s before calling the Gateway", async (flag, key) => {
+    for (const value of ["", " \t\n"]) {
+      for (const options of [{ [key]: value }, { explain: true, runId: "run-1", [key]: value }]) {
+        await runCommandWithRuntime(runtime, () => auditListCommand(options, runtime));
+        expect(runtime.error).toHaveBeenLastCalledWith(`${flag} must not be blank`);
+        expect(runtime.exit).toHaveBeenLastCalledWith(1);
+        expect(callGateway).not.toHaveBeenCalled();
+      }
+    }
+  });
+
   it("preserves the local-time result for timezone-less timestamps", async () => {
     const input = "2026-07-01T00:00:00";
     const localMs = 1_782_878_400_000;
