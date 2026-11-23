@@ -251,14 +251,14 @@ suite.define(() => {
   });
 
   it.each(["own", "child"] as const)(
-    "supersedes a pending %s question only after a new prompt sends",
+    "keeps a pending %s question until the Gateway resolves it",
     async (source) => {
-      const childKey = "agent:main:dashboard:superseded-question";
+      const childKey = "agent:main:dashboard:pending-question";
       const { gateway, page } = await openQuestionPage(undefined, false, [
         { key: childKey, kind: "direct", parentSessionKey: questionSessionKey, updatedAt: 1 },
       ]);
       const request = {
-        ...questionRecord("superseded-manual-step", {
+        ...questionRecord("pending-manual-step", {
           questionId: "required_action",
           header: "Manual step",
           question: "The browser needs a manual step. Complete it before continuing.",
@@ -293,10 +293,22 @@ suite.define(() => {
       await gateway.emitGatewayEvent("question.requested", next);
       await gateway.setMethodResponse("question.resolve", { status: "cancelled" });
       await gateway.resolveDeferred("chat.send", { status: "started", runId: "replacement-run" });
-      await expectResolution(gateway, { id: request.id, cancel: true });
+      await expectCount(
+        page
+          .locator(".chat-group.user")
+          .filter({ hasText: "Use the supported browser workflow instead." }),
+        1,
+      );
+      await panel.waitFor();
+      expect(await gateway.getRequests("question.resolve")).toHaveLength(0);
+      await gateway.emitGatewayEvent("question.resolved", {
+        id: request.id,
+        sessionKey: request.sessionKey,
+        status: "cancelled",
+      });
       await expectCount(panel, 0);
       await panelFor(page, next.questions[0]!.question).waitFor();
-      expect(await gateway.getRequests("question.resolve")).toHaveLength(1);
+      expect(await gateway.getRequests("question.resolve")).toHaveLength(0);
       if (source === "own") {
         await page.locator(".chat-question-summary").filter({ hasText: "Skipped" }).waitFor();
       }

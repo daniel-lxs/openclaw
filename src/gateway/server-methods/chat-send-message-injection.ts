@@ -119,6 +119,7 @@ export function createChatSendMessageInjectionStarter(params: {
   userTurnTranscriptRecorder: NonNullable<
     ReplyBackendQueueMessageOptions["userTurnTranscriptRecorder"]
   >;
+  replaceQuestion?: (assertCurrent: () => void) => Promise<void>;
   logGateway: GatewayRequestContext["logGateway"];
   assertCurrent?: () => void;
   operatorAuthority?: AdmittedRunOperatorAuthority;
@@ -265,6 +266,10 @@ export function createChatSendMessageInjectionStarter(params: {
         return undefined;
       }
       const preparedJoin = join.kind === "prepared" ? join : undefined;
+      const replaceQuestion =
+        preparedJoin && preparedJoin.allowPendingUserInputAnswer !== false
+          ? params.replaceQuestion
+          : undefined;
       phase?.mark("detail.run_admission.steer_delivery");
       try {
         await delivery.prepareCurrent();
@@ -352,7 +357,27 @@ export function createChatSendMessageInjectionStarter(params: {
           ...(ctx.ApprovalReviewerDeviceId
             ? { inputRequesterDeviceId: ctx.ApprovalReviewerDeviceId }
             : {}),
-          allowPendingUserInputAnswer: preparedJoin?.allowPendingUserInputAnswer,
+          allowPendingUserInputAnswer: replaceQuestion
+            ? false
+            : preparedJoin?.allowPendingUserInputAnswer,
+          ...(replaceQuestion
+            ? {
+                // Queue the actual user text before waking the blocked tool.
+                onQueueAccepted: (accepted: boolean) => {
+                  if (accepted) {
+                    void replaceQuestion(() => {
+                      assertCurrent();
+                      preparedJoin?.read();
+                      delivery.assertCurrent();
+                    }).catch((error: unknown) => {
+                      params.logGateway.warn(
+                        `Could not supersede pending question: ${formatErrorMessage(error)}`,
+                      );
+                    });
+                  }
+                },
+              }
+            : {}),
           allowCollaborativeSteering:
             cfg.messages?.queue?.allowCollaborativeSteering === true &&
             (!ctx.InputProvenance || ctx.InputProvenance.kind === "external_user"),

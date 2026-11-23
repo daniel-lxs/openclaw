@@ -98,6 +98,7 @@ type QuestionEntry = {
 export type QuestionObservation = {
   readonly record: QuestionRecord;
   readonly ordinary: boolean;
+  readonly requesterRun?: OperationalRunInstanceRef;
   readonly sessionAccess?: QuestionSessionAccess;
   readonly authorizeClient?: QuestionClientAuthorization;
   isCurrent: () => boolean;
@@ -260,6 +261,7 @@ export class QuestionManager {
         return entry.record;
       },
       ordinary: entry.ordinary,
+      requesterRun: entry.requesterRun,
       sessionAccess: entry.sessionAccess,
       authorizeClient: entry.authorizeClient,
       isCurrent: () => this.entries.get(entry.record.id) === entry,

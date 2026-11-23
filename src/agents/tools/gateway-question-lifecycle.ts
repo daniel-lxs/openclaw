@@ -6,6 +6,7 @@ import {
   type QuestionWaitAnswerResult,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { createAbortError } from "../../infra/abort-signal.js";
+import { QUESTION_COMPOSER_REPLACEMENT } from "../../shared/question-composer-replacement.js";
 import type { callGatewayTool } from "./gateway.js";
 
 /** Grace added to Gateway RPC deadlines so the question's own timeout wins. */
@@ -64,6 +65,18 @@ export async function awaitGatewayQuestionAnswer(params: {
     throw new Error("question.waitAnswer returned an invalid status");
   }
   return result;
+}
+
+/** A cancelled waiter keeps its status-only wire contract. Read the reason from its record. */
+export async function wasQuestionReplacedByComposer(
+  gatewayCall: GatewayQuestionCall,
+  questionId: string,
+): Promise<boolean> {
+  const result = await gatewayCall("question.get", { timeoutMs: 1_000 }, { id: questionId }).catch(
+    () => undefined,
+  );
+  const question = asNullableRecord(asNullableRecord(result)?.question);
+  return question?.status === "cancelled" && question.resolvedBy === QUESTION_COMPOSER_REPLACEMENT;
 }
 
 /**
