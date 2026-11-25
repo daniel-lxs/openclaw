@@ -3,6 +3,11 @@ import { OAuthRefreshFailureError } from "../../agents/auth-profiles/oauth-refre
 import { FailoverError } from "../../agents/failover-error.js";
 import { AUTH_PROFILE_COOLDOWN_ERROR_CODE } from "../../agents/failover/error.js";
 import { ProviderAuthError } from "../../agents/model-auth-runtime-shared.js";
+import {
+  appendFailedCandidateAttempt,
+  throwFallbackFailureSummary,
+} from "../../agents/model-fallback-attempt.js";
+import type { FallbackAttempt } from "../../agents/model-fallback.types.js";
 import { runWithAgentWorkspaceReadiness } from "../../agents/workspace-readiness.js";
 import { decodePostgresError } from "../../infra/postgres-sync/protocol.js";
 import { classifyGatewayStorageFailure } from "../../infra/sqlite-error-diagnostics.js";
@@ -42,6 +47,45 @@ describe("createAgentLifecycleTerminalBackstop", () => {
   function finishing(terminal: ReturnType<typeof createTerminal>, data: Record<string, unknown>) {
     terminal.note({ stream: "lifecycle", data: { phase: "finishing", ...data } });
   }
+
+  it("preserves billing guidance and attribution through mixed fallback exhaustion", () => {
+    const billingError = {
+      message: "A subscription is required.",
+    };
+    const attempts: FallbackAttempt[] = [];
+    const paid = { provider: "paid-provider", model: "model-a" };
+    const other = { provider: "other-provider", model: "model-b" };
+    const firstError = new FailoverError("provider diagnostic", {
+      ...paid,
+      reason: "billing",
+      billingError,
+    });
+    const lastError = new FailoverError("provider diagnostic", { ...other, reason: "timeout" });
+    appendFailedCandidateAttempt({ attempts, candidate: paid, error: firstError });
+    appendFailedCandidateAttempt({ attempts, candidate: other, error: lastError });
+    let aggregate: unknown;
+    try {
+      throwFallbackFailureSummary({
+        attempts,
+        candidates: [],
+        lastError,
+        label: "models",
+        formatAttempt: (attempt) => attempt.error,
+      });
+    } catch (error) {
+      aggregate = error;
+    }
+    expect(aggregate).toMatchObject({ reason: "timeout" });
+    createTerminal().emit("error", aggregate);
+    expect(emitted().data).toMatchObject({
+      error: billingError.message,
+      errorObservation: {
+        ...paid,
+        failoverReason: "billing",
+        billingError,
+      },
+    });
+  });
 
   it.each([
     {

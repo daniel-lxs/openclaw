@@ -60,8 +60,11 @@ export function ChatRunFailureNotice(props: {
   const [open, setOpen] = createSignal(false);
   const [placement, setPlacement] = createSignal<"bottom" | "top">("bottom");
   let panel: PopoverHandle | undefined;
+  const billingError = () =>
+    props.cause?.failoverReason === "billing" ? props.cause.billingError : undefined;
   const fixTitle = () => props.cause && FIX_TITLES.get(props.cause.failoverReason!);
   const title = () =>
+    billingError()?.message ??
     t(`chat.recovery.${fixTitle() ?? "failedTitle"}`, {
       provider: providerDisplayLabel(props.cause?.provider ?? "", props.presentation),
     });
@@ -149,9 +152,21 @@ export function ChatRunFailureNotice(props: {
             setOpen(next);
           }}
         >
-          <Show when={lead()}>
+          <Show when={lead() || billingError()?.actionUrl}>
             <p class="chat-run-failure__summary">
-              <bdi>{lead()}</bdi>
+              <Show when={lead()}>
+                <bdi>{lead()}</bdi>
+              </Show>
+              <Show when={billingError()?.actionUrl}>
+                {(url) => (
+                  <>
+                    {lead() ? " " : ""}
+                    <a class="session-link" href={url()} target="_blank" rel="noopener noreferrer">
+                      {t("chat.recovery.viewPlans")}
+                    </a>
+                  </>
+                )}
+              </Show>
             </p>
           </Show>
           {/* Logs are technical strings, so they stay left to right in every locale. */}

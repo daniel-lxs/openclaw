@@ -1,5 +1,10 @@
 // Error identity and timeout recognition must not load logging or provider runtime.
-import { readErrorName } from "@openclaw/normalization-core/error-coercion";
+import type { BillingError } from "@openclaw/normalization-core/billing-error";
+import {
+  collectErrorGraphCandidates,
+  readErrorName,
+} from "@openclaw/normalization-core/error-coercion";
+import { parseStrictNonNegativeInteger } from "@openclaw/normalization-core/number-coercion";
 import {
   asOptionalObjectRecord,
   readStringField,
@@ -7,7 +12,8 @@ import {
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { AgentRunTerminalOutcome } from "../agent-run-terminal-outcome.types.js";
 import { isProviderRequestSizeCeilingError, isTimeoutErrorMessage } from "./message-patterns.js";
-import type { FailoverReason } from "./signal.js";
+import { extractFailoverSignalDetails, MAX_FAILOVER_DETAIL_CANDIDATES } from "./signal-details.js";
+import type { FailoverReason, FailoverSignal } from "./signal.js";
 
 const ABORT_TIMEOUT_RE = /request was aborted|request aborted/i;
 
@@ -49,6 +55,7 @@ export type FallbackAttemptRecord = {
   provider: string;
   model: string;
   reason: FailoverReason;
+  billingError?: BillingError;
   status?: number;
   code?: string;
   error?: string;
@@ -59,6 +66,7 @@ export type FallbackAttemptRecord = {
 /** Structured error used to carry model fallback/failover metadata across layers. */
 export class FailoverError extends Error {
   readonly reason: FailoverReason;
+  readonly billingError?: BillingError;
   readonly provider?: string;
   readonly model?: string;
   readonly profileId?: string;
@@ -90,6 +98,7 @@ export class FailoverError extends Error {
     super(message, { cause: params.cause });
     this.name = "FailoverError";
     this.reason = params.reason;
+    this.billingError = params.reason === "billing" ? params.billingError : undefined;
     this.provider = params.provider;
     this.model = params.model;
     this.profileId = params.profileId;
@@ -244,4 +253,110 @@ export function isSignalTimeoutReason(reason: unknown): boolean {
   } catch {
     return false;
   }
+}
+
+export function normalizeFailoverStatus(
+  status: number | undefined,
+  code?: string,
+): number | undefined {
+  return code === "selected_auth_profile_unavailable" ? undefined : status;
+}
+
+function readDirectStatusCode(err: unknown): number | undefined {
+  const record = asOptionalObjectRecord(err);
+  const candidate = record?.status ?? record?.statusCode;
+  if (typeof candidate === "number") {
+    return candidate;
+  }
+  if (typeof candidate === "string") {
+    return parseStrictNonNegativeInteger(candidate);
+  }
+  return undefined;
+}
+
+function readStableProviderErrorType(raw: string): string | undefined {
+  const value = raw.trim();
+  return /^[A-Z][A-Z0-9_:-]*$/.test(value) &&
+    !/^(?:api|authentication|invalid_request|not_found|overloaded|permission|rate_limit|server)_error$/i.test(
+      value,
+    )
+    ? value
+    : undefined;
+}
+
+function readDirectErrorType(err: unknown): string | undefined {
+  const record = asOptionalObjectRecord(err);
+  if (!record) {
+    return undefined;
+  }
+  const directType = record.errorType;
+  if (typeof directType === "string") {
+    return readStableProviderErrorType(directType);
+  }
+  const detailType = asOptionalObjectRecord(record.detail)?.type;
+  if (typeof detailType === "string") {
+    return readStableProviderErrorType(detailType);
+  }
+  const type = normalizeOptionalString(record.type);
+  return type && !/^(?:error|exception)$/i.test(type)
+    ? readStableProviderErrorType(type)
+    : undefined;
+}
+
+function readDirectProvider(err: unknown): string | undefined {
+  return normalizeOptionalString(asOptionalObjectRecord(err)?.provider);
+}
+
+function readDirectErrorDetails(err: unknown): string[] | undefined {
+  const candidate = asOptionalObjectRecord(err);
+  if (!candidate) {
+    return undefined;
+  }
+  return extractFailoverSignalDetails(
+    candidate.param,
+    candidate.errorBody,
+    candidate.body,
+    candidate.detail,
+    candidate.error,
+  );
+}
+
+export function normalizeErrorSignal(
+  err: unknown,
+  providerHint?: string,
+  scope: "direct" | "nested" = "nested",
+  includeProviderCauses = false,
+): FailoverSignal {
+  const read = <T>(reader: (candidate: unknown) => T | undefined) =>
+    scope === "direct" ? reader(err) : findErrorProperty(err, reader);
+  const message = read(readDirectErrorMessage);
+  const code = read(readDirectErrorCode);
+  let remainingCauses = MAX_FAILOVER_DETAIL_CANDIDATES;
+  const causes = includeProviderCauses
+    ? collectErrorGraphCandidates(err, (candidate) => {
+        if (remainingCauses === 0) {
+          return [];
+        }
+        const next = [candidate.error, candidate.cause]
+          .filter((value) => value != null)
+          .slice(0, remainingCauses);
+        remainingCauses -= next.length;
+        return next;
+      }).slice(1)
+    : [];
+  return {
+    status: normalizeFailoverStatus(read(readDirectStatusCode), code),
+    code,
+    errorType: read(readDirectErrorType),
+    message: message || undefined,
+    provider: read(readDirectProvider) ?? providerHint,
+    details: readDirectErrorDetails(err),
+    providerCauseDetails: causes.length
+      ? extractFailoverSignalDetails(
+          ...causes.flatMap((candidate) =>
+            [readDirectErrorMessage(candidate)].concat(readDirectErrorDetails(candidate) ?? []),
+          ),
+        )
+      : undefined,
+  };
 }

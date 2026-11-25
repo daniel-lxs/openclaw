@@ -1,4 +1,3 @@
-import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { messageToolOwnsVisibleReply } from "../../auto-reply/source-reply-delivery-mode.js";
 import { getRuntimeConfig } from "../../config/config.js";
 import { canonicalizeMainSessionAlias } from "../../config/sessions/main-session.js";
@@ -122,13 +121,13 @@ import {
   retainCliPluginExecutionConsumer,
   unsupportedIsolatedCompletionError,
 } from "./execution-target.js";
-import { isClaudeCliBackendId, normalizeCliModel } from "./helpers.js";
+import { isClaudeCliBackendId } from "./helpers.js";
 import { admitCliHistoryAccount } from "./history-boundary.js";
 import { cliBackendLog } from "./log.js";
 import { prepareCliLoopbackBundleMcp } from "./loopback-bundle-mcp.js";
 import { mintCliMcpClientGrant } from "./mcp-client-grant.js";
 import { buildCliMcpGrantContext } from "./mcp-grant-context.js";
-import { resolveCliModelCapabilities } from "./model-capabilities.js";
+import { resolveCliModelCapabilities, resolveCliModelRoute } from "./model-capabilities.js";
 import { detectNodeClaudePlacement } from "./prepare-claude.js";
 import { prepareCliTurnHookContext, runCliAuthorizedPromptBuild } from "./prepare-hook-context.js";
 import * as mcp from "./prepare-mcp.js";
@@ -532,17 +531,8 @@ async function prepareCliRunContextWithinReadFence(
       )
     : undefined;
 
-  const modelId = (params.model ?? "default").trim() || "default";
-  const modelProvider =
-    normalizeOptionalString(params.modelProvider) ??
-    normalizeOptionalString(params.provider) ??
-    params.provider;
-  const normalizedCatalogModel = normalizeCliModel(modelId, backendResolved.config);
-  const normalizedModel =
-    backendResolved.resolveModelId?.({
-      modelId: normalizedCatalogModel,
-      contextWindow: params.contextWindow,
-    }) ?? normalizedCatalogModel;
+  const { modelId, modelProvider, providerOwner, normalizedCatalogModel, normalizedModel } =
+    resolveCliModelRoute({ run: params, backend: backendResolved, runConfig, workspaceDir });
   const {
     fingerprint: questionFingerprint,
     bindQuestionAnswerAuthority,
@@ -1553,6 +1543,7 @@ async function prepareCliRunContextWithinReadFence(
       workspaceDir,
       cwd,
       backendResolved,
+      providerOwner,
       hostOwnedTools,
       ...(turnAudience.memoryAudience ? { memoryAudience: turnAudience.memoryAudience } : {}),
       preparedBackend: preparedBackendFinal,

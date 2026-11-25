@@ -52,6 +52,29 @@ it("keeps only the latest identical failure across internal updates and interrup
   expect(latest).not.toHaveProperty("repeatCount");
 });
 
+it("keeps plan notices with different links separate", () => {
+  const planFailure = (plan: string): Notice => ({
+    kind: "notice",
+    key: `failure:${plan}`,
+    text: "A subscription is required.",
+    timestamp: 1,
+    runError: {
+      runId: plan,
+      summary: "A subscription is required.",
+      cause: {
+        provider: "google",
+        failoverReason: "billing",
+        billingError: {
+          message: "A subscription is required.",
+          actionUrl: `https://example.com/plans/${plan}`,
+        },
+      },
+    },
+  });
+  const notices = [planFailure("standard"), planFailure("ultra")];
+  expect(projectRunFailureStreaks(notices)).toEqual(notices);
+});
+
 it.each([
   ["real user input", message("user", { role: "USER", content: "Try once more" })],
   ["a changed summary", failure("different", "Rate-limit recovery stopped ")],

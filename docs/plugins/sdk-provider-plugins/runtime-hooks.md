@@ -324,6 +324,7 @@ Cancelled preparation must reject after cleanup, not report a missing login.
 | `buildAuthDoctorHint`             | Auth repair guidance                                                                        |
 | `matchesContextOverflowError`     | Provider-owned overflow detection                                                           |
 | `classifyFailoverReason`          | Provider-owned rate-limit/overload classification                                           |
+| `formatBillingError`              | Optional provider-authored billing message and plans link                                   |
 | `isCacheTtlEligible`              | Prompt cache TTL gating                                                                     |
 | `buildMissingAuthMessage`         | Custom missing-auth hint                                                                    |
 | `augmentModelCatalog`             | Synthetic forward-compat rows (deprecated - prefer `registerModelCatalogProvider`)          |
@@ -352,6 +353,34 @@ array to replace history. These edits do not mutate the stored transcript.
 including a healthy process reused by a restarted Gateway. Honor its
 abort signal and reject when reconciliation fails; OpenClaw blocks the
 provider request and releases the request lease.
+
+### Billing error guidance
+
+A provider can opt into specific billing guidance with the synchronous
+`formatBillingError(ctx: ProviderFailoverErrorContext)` hook. Return
+`{ message: string; actionUrl?: string }` or `undefined` to keep the generic copy.
+OpenClaw calls the selected, prepared provider after it classifies a billing
+failure. Use deliberate user-facing copy and a public plans URL. OpenClaw trims
+the message to 600 characters and accepts absolute HTTP(S) URLs up to 2,048
+characters with no username or password. An invalid URL is omitted. Empty
+messages and throwing hooks retain the generic billing copy.
+
+For example, a provider that requires a plan for third-party clients can return
+constant guidance for its recognized billing error:
+
+```typescript
+formatBillingError: (ctx) =>
+  ctx.code === "third_party_plan_required"
+    ? {
+        message: "An active plan is required to use this provider in third-party apps.",
+      }
+    : undefined,
+```
+
+The Google adapter uses this hook for the Google AI Ultra subscription
+refusal. The Control UI shows the explanation on the failure notice and offers
+the plans link in the existing error details. The same guidance is available
+when the chat is reloaded.
 
 Runtime fallback notes:
 
